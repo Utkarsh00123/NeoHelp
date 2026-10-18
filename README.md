@@ -9,6 +9,12 @@
 
 ---
 
+<p align="center">
+  <img src="docs/images/dashboard_preview.png" alt="NeoHelp Live Operational Dashboard" width="100%">
+</p>
+
+---
+
 ## 📌 What the App Does (in 3–4 lines)
 
 **NeoHelp** is a timeline-first operational coordination platform designed for high-stress incident triage, cross-team task management, and compliance auditing. It eliminates race conditions and spreadsheet errors through atomic conditional updates, optimistic version locking, and strict server-side role-based access control (RBAC). Every mutation dual-writes an append-only audit event to a chronological activity timeline within the exact same database transaction, while asynchronous jobs are processed reliably via a transactional outbox worker.
