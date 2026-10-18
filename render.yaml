@@ -1,7 +1,7 @@
 databases:
   - name: neohelp-postgres
     databaseName: neohelp
-    user: postgres
+    user: neohelp_admin
     plan: free
 
 services:
