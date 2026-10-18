@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 1 day
     
+    # Background Worker In-App Mode (for single-service free deployments)
+    RUN_WORKER_IN_APP: bool = os.getenv("RUN_WORKER_IN_APP", "false").lower() == "true"
+    
     # CORS
     CORS_ORIGINS: List[str] = [
         "http://localhost:5173",

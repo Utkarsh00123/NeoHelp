@@ -1,0 +1,772 @@
+NEOHELP LIVE-LINK FEATURE AND CONCURRENCY TEST PLAN
+===================================================
+
+Purpose
+-------
+This document explains how to deploy NeoHelp, obtain live frontend and backend
+links, test the application with two isolated email accounts, and verify the
+main feature, authorization, concurrency, idempotency, and worker behaviors.
+
+Current repository assumptions
+------------------------------
+- Frontend: React 19 + Vite
+- Backend: FastAPI
+- Database: PostgreSQL
+- Cache/deduplication: Redis
+- Background worker: Python outbox worker
+- Local orchestration: docker compose
+- Demo password in development: password123
+
+IMPORTANT: The existing Vite proxy is for development. A production deployment
+must either expose the backend through the same domain under /api or configure
+the frontend to call the public backend URL. Do not use
+http://backend:8000 in browser-side production traffic; that hostname only
+works inside the Docker network.
+
+
+SECTION 1 - PRE-DEPLOYMENT CHECKS
+=================================
+
+1. Open a terminal in the repository root:
+
+   cd Neohelp
+
+2. Check the working tree:
+
+   git status
+
+3. Start the complete local stack:
+
+   docker compose up --build -d
+
+4. Check service status:
+
+   docker compose ps
+
+   Expected services:
+   - postgres: running/healthy
+   - redis: running/healthy
+   - backend: running
+   - worker: running
+   - frontend: running
+
+5. Verify local endpoints:
+
+   Frontend: http://localhost:5173
+   Backend health: http://localhost:8000/api/health
+   Backend Swagger: http://localhost:8000/docs
+
+6. Run the existing automated test suite:
+
+   docker compose exec backend pytest
+
+7. Run frontend checks:
+
+   cd frontend
+   npm run lint
+   npm run build
+   cd ..
+
+Do not deploy until the service health checks and existing tests have been
+reviewed. A passing local test suite does not replace the live-link tests in
+this document.
+
+
+SECTION 2 - PRODUCTION DEPLOYMENT REQUIREMENTS
+==============================================
+
+Deploy these four runtime components:
+
+1. PostgreSQL database
+2. Redis instance
+3. FastAPI backend
+4. React frontend
+5. Background worker
+
+The backend and worker must use the same:
+- DATABASE_URL
+- REDIS_URL
+- SECRET_KEY
+
+The backend and worker must be able to reach PostgreSQL and Redis over the
+production network.
+
+Required production environment variables for backend and worker:
+
+   DATABASE_URL=<production PostgreSQL async URL>
+   REDIS_URL=<production Redis URL>
+   SECRET_KEY=<long random production secret>
+   ENVIRONMENT=production
+   CORS_ORIGINS=<public frontend origin>
+
+Do not use these development values in production:
+
+   SECRET_KEY=super-secret-neohelp-development-key-32chars-min!
+   POSTGRES_PASSWORD=postgres
+
+The frontend needs a working production API route. Use one of these setups:
+
+OPTION A - SAME ORIGIN (RECOMMENDED)
+------------------------------------
+Expose the frontend at:
+
+   https://app.example.com
+
+Route API requests from the same origin:
+
+   https://app.example.com/api/*
+
+to the FastAPI backend.
+
+This keeps the frontend code using /api and avoids browser CORS problems.
+
+OPTION B - SEPARATE FRONTEND AND BACKEND DOMAINS
+------------------------------------------------
+Frontend:
+
+   https://app.example.com
+
+Backend:
+
+   https://api.example.com
+
+The frontend must use the public backend URL, not the internal Docker service
+name. Configure the production build so its API base is equivalent to:
+
+   https://api.example.com/api
+
+Configure backend CORS to allow exactly:
+
+   https://app.example.com
+
+After deployment, test the API directly before testing the UI:
+
+   curl -i https://api.example.com/api/health
+
+Expected response: HTTP 200 with a healthy status body.
+
+
+SECTION 3 - DEPLOYMENT VERIFICATION
+===================================
+
+Record these values after deployment:
+
+   FRONTEND_URL=https://________________________
+   BACKEND_URL=https://_________________________
+   HEALTH_URL=https://__________________________/api/health
+   SWAGGER_URL=https://_________________________/docs
+
+Verify:
+
+1. Open FRONTEND_URL in a browser.
+2. Open HEALTH_URL in a browser or with curl.
+3. Open SWAGGER_URL and confirm the API documentation loads.
+4. Open browser Developer Tools, Network tab.
+5. Confirm frontend API requests go to the intended backend URL.
+6. Confirm no request tries to call http://backend:8000.
+7. Confirm there are no CORS errors.
+8. Confirm login returns HTTP 200.
+9. Confirm the dashboard loads work items.
+10. Confirm the worker is running and processing outbox jobs.
+
+Useful commands, if your deployment platform provides shell access:
+
+   docker compose logs backend
+   docker compose logs worker
+   docker compose logs frontend
+
+Look for:
+- database connection errors
+- Redis connection errors
+- CORS errors
+- failed seed/startup errors
+- worker retry loops
+- 500 responses
+
+
+SECTION 4 - TEST ACCOUNT SETUP
+==============================
+
+Use two isolated browser sessions. Do not use two tabs in the same normal
+browser profile because localStorage can share the same JWT token.
+
+Recommended setup:
+
+   Session A: Chrome normal window
+   Session B: Chrome Incognito window
+
+or:
+
+   Session A: Chrome
+   Session B: Firefox
+
+Development seeded accounts:
+
+   Account A
+   Email: lead.incident@neohelp.io
+   Password: password123
+   Role: Lead in Incident Response
+
+   Account B
+   Email: member.incident@neohelp.io
+   Password: password123
+   Role: Member in Incident Response
+
+Additional accounts for permissions testing:
+
+   Member: member.compliance@neohelp.io
+   Lead: lead.compliance@neohelp.io
+   Outsider: member.core@neohelp.io
+
+IMPORTANT PRODUCTION NOTE:
+The repository currently contains development seeded users and a convenience
+user-switch endpoint. Do not expose seeded demo credentials or unrestricted
+user switching in a real production environment. For a public deployment,
+create two real test users with different email addresses and use those users
+instead.
+
+Record the accounts used for this test:
+
+   Test Account A email: __________________________
+   Test Account B email: __________________________
+   Account A role/team: ___________________________
+   Account B role/team: ___________________________
+
+
+SECTION 5 - TEST RESULT RECORDING FORMAT
+========================================
+
+For every test, record:
+
+   Test ID:
+   Date/time:
+   Frontend URL:
+   Backend URL:
+   Account A:
+   Account B:
+   Item ID:
+   Request IDs, if available:
+   Expected result:
+   Actual result:
+   HTTP status codes:
+   Timeline result:
+   Pass/Fail:
+   Screenshot or log reference:
+   Notes:
+
+Use UTC or include the timezone. Do not record passwords, JWT tokens, cookies,
+or other secrets.
+
+
+SECTION 6 - BASIC AUTHENTICATION TESTS
+======================================
+
+AUTH-001 - Valid login
+----------------------
+Steps:
+1. Open FRONTEND_URL in Session A.
+2. Log in as Account A.
+3. Confirm the dashboard loads.
+
+Expected:
+- Login succeeds.
+- Correct user name and role are displayed.
+- Work items load.
+- No console or network errors.
+
+AUTH-002 - Two-account isolation
+--------------------------------
+Steps:
+1. Log in as Account A in Session A.
+2. Log in as Account B in Session B.
+3. Refresh both sessions.
+4. Switch between the sessions.
+
+Expected:
+- Session A remains Account A.
+- Session B remains Account B.
+- One session cannot change the other session's active token.
+
+AUTH-003 - Invalid credentials
+------------------------------
+Steps:
+1. Log out.
+2. Enter an invalid password.
+
+Expected:
+- Login is rejected.
+- No dashboard data is shown.
+
+
+SECTION 7 - READ, FILTER, AND PAGINATION TESTS
+==============================================
+
+READ-001 - Dashboard list
+-------------------------
+1. Log in as Account A.
+2. Confirm the work item list loads.
+3. Open an item.
+4. Return to the list.
+
+Expected:
+- Items load without errors.
+- Item details match the selected item.
+
+READ-002 - Filters
+------------------
+Test each filter separately and in combination:
+
+- Assigned to me
+- Unassigned urgent
+- Awaiting approval
+- Team
+- Status
+- Priority
+- Search text
+
+Expected:
+- Every result satisfies the selected filters.
+- Clearing filters restores the broader list.
+
+READ-003 - Cursor pagination
+----------------------------
+1. Load a page with a small page size if the UI supports it.
+2. Load the next page.
+3. Compare item IDs.
+
+Expected:
+- No duplicate item appears across adjacent pages.
+- The next page loads successfully.
+- New items do not cause old pages to repeat records unexpectedly.
+
+
+SECTION 8 - CRUD AND TIMELINE TESTS
+===================================
+
+CRUD-001 - Create item
+---------------------
+1. Use an account with mutation permission.
+2. Create an item with a unique title.
+3. Record the returned item ID.
+
+Expected:
+- Item appears once in the list.
+- Status starts as Open.
+- Version starts at 1.
+
+CRUD-002 - Edit item
+--------------------
+1. Open the item.
+2. Change title, description, priority, or due date.
+3. Save.
+
+Expected:
+- Changes persist after refresh.
+- Version increases by 1.
+- Timeline contains an update event.
+
+CRUD-003 - Add comment
+----------------------
+1. Add a unique comment.
+2. Refresh the timeline.
+
+Expected:
+- Comment appears exactly once.
+- Existing timeline entries remain.
+
+CRUD-004 - Activity timeline
+----------------------------
+Perform create, claim, edit, transition, and comment actions.
+
+Expected:
+- Each successful action has an activity event.
+- Events identify the correct actor.
+- Events appear in reverse chronological order.
+- No event is created for rejected actions.
+
+
+SECTION 9 - CONCURRENCY TESTS WITH TWO LIVE ACCOUNTS
+====================================================
+
+CON-001 - Simultaneous claim
+----------------------------
+Purpose: Verify that only one user can claim an unassigned item.
+
+Preparation:
+1. Account A and Account B must belong to the same team.
+2. Create or find one unassigned item.
+3. Open the same item in both sessions.
+4. Confirm both browsers show it as unassigned.
+
+Execution:
+1. Put the Claim button in view in both sessions.
+2. Count down: 3, 2, 1.
+3. Click Claim in both sessions as close together as possible.
+4. Wait for both responses.
+5. Refresh both sessions.
+6. Open the activity timeline.
+
+Expected:
+- Exactly one request succeeds with HTTP 200.
+- The other request receives HTTP 409.
+- Exactly one assignee is stored.
+- The losing session shows a conflict or rollback message.
+- Both sessions show the same final assignee after refresh.
+- Exactly one claim event exists.
+
+Record:
+   Account A status: ______
+   Account B status: ______
+   Winning assignee: ______
+   Claim event count: ______
+
+CON-002 - Simultaneous edit with stale version
+-----------------------------------------------
+Purpose: Verify that an older browser cannot overwrite a newer edit.
+
+Preparation:
+1. Open the same item in both sessions.
+2. Confirm both browsers display the same version number.
+
+Execution:
+1. In Session A, change the title and save.
+2. In Session B, without refreshing, change the description and save.
+
+Expected:
+- Session A succeeds with HTTP 200.
+- Session B receives HTTP 409.
+- Session B does not overwrite Session A's title.
+- The server's current version is returned or made available for reload.
+- Refreshing both sessions shows identical final data.
+- Only the successful update is reflected as a committed update event.
+
+CON-003 - Simultaneous transition
+----------------------------------
+Purpose: Detect lost updates in workflow transitions.
+
+Preparation:
+1. Put the item in In Progress.
+2. Open it in both sessions.
+
+Execution:
+1. Account A attempts In Progress -> Awaiting Approval.
+2. Account B attempts In Progress -> Open at the same time.
+3. Refresh both sessions.
+4. Inspect the timeline and API response codes.
+
+Expected safe behavior:
+- One transition wins.
+- The other is rejected with a conflict or a state/version error.
+- Final state is consistent in both sessions.
+- Timeline accurately records only valid committed transitions.
+
+IMPORTANT CURRENT RISK:
+The current transition implementation increments the version but does not
+appear to require the client version in its conditional UPDATE. If both
+requests return HTTP 200, report this as a concurrency defect. The later
+transition may overwrite the earlier one.
+
+CON-004 - Simultaneous comments
+--------------------------------
+1. Open the same item in both sessions.
+2. Add different comments at nearly the same time.
+3. Refresh the timeline.
+
+Expected:
+- Both comments are preserved.
+- Neither comment overwrites the other.
+- Both actors are correct.
+
+CON-005 - Rapid repeated claim clicks
+-------------------------------------
+1. Use one unassigned item.
+2. Rapidly click Claim multiple times in one session.
+3. Refresh the item and timeline.
+
+Expected:
+- One claim is persisted.
+- No duplicate claim events.
+- UI disables or handles repeated clicks safely.
+
+
+SECTION 10 - IDEMPOTENCY TESTS
+==============================
+
+IDEMP-001 - Sequential duplicate create
+----------------------------------------
+1. Send a create request with a unique Idempotency-Key.
+2. Repeat the exact request with the exact same key.
+
+Expected:
+- First request creates the item.
+- Second request returns the original item response.
+- Both responses contain the same item ID.
+- Only one item exists.
+
+IDEMP-002 - Same key with changed payload
+------------------------------------------
+1. Send a request with key KEY-001 and payload A.
+2. Send a different payload using KEY-001.
+
+Expected:
+- The server must not silently treat different payloads as the same request.
+- Record the actual behavior as a security/data-integrity finding if the
+  changed payload is accepted or returns an ambiguous response.
+
+IDEMP-003 - Simultaneous duplicate requests
+--------------------------------------------
+1. Prepare two identical create requests.
+2. Give both the same Idempotency-Key.
+3. Submit them at the same time using an API client or script.
+
+Expected:
+- One logical item is created.
+- Both callers receive a safe deterministic response.
+- No uncaught database primary-key error occurs.
+
+If one request returns HTTP 500 or a database integrity error, record it as a
+production concurrency issue.
+
+
+SECTION 11 - RBAC AND SECURITY TESTS
+====================================
+
+RBAC-001 - Viewer cannot mutate
+-------------------------------
+Log in as a Viewer and attempt:
+
+- Create item
+- Edit item
+- Claim item
+- Transition item
+- Add comment
+
+Expected: HTTP 403 for each mutation.
+
+RBAC-002 - Member approval restriction
+---------------------------------------
+1. Move an item to Awaiting Approval as a Member.
+2. Attempt Awaiting Approval -> Resolved as a Member.
+
+Expected: HTTP 403.
+
+RBAC-003 - Lead approval
+------------------------
+1. Use a Lead account on an Awaiting Approval item.
+2. Transition to Resolved.
+
+Expected: HTTP 200 and status Resolved.
+
+RBAC-004 - Cross-team access
+----------------------------
+1. Create an item in Incident Response.
+2. Log in as a user who is not a member of Incident Response.
+3. Attempt to open the item directly.
+4. Attempt to edit, claim, transition, or comment.
+
+Expected: HTTP 403 for all protected operations.
+
+RBAC-005 - Direct API bypass attempt
+------------------------------------
+Use browser DevTools or Swagger to call protected endpoints directly.
+
+Expected:
+- Hiding a button in the frontend is not the only protection.
+- Backend rejects unauthorized requests.
+
+
+SECTION 12 - WORKER AND OUTBOX TESTS
+====================================
+
+OUTBOX-001 - Normal processing
+------------------------------
+1. Create, edit, claim, or transition an item.
+2. Check worker logs.
+3. Wait for processing.
+
+Expected:
+- The API mutation commits successfully.
+- An outbox job is created.
+- Worker processes the job.
+- The same job is not processed twice.
+
+OUTBOX-002 - Worker temporarily stopped
+----------------------------------------
+1. Stop the worker only.
+2. Perform a valid item mutation.
+3. Confirm the API still responds successfully.
+4. Start the worker again.
+5. Confirm the pending outbox job is processed.
+
+Expected:
+- Primary database state is not lost.
+- Pending job remains available.
+- Worker catches up after restart.
+
+OUTBOX-003 - Retry and dead-letter behavior
+--------------------------------------------
+Use a controlled test environment only.
+Force a worker-side processing failure.
+
+Expected:
+- Job retries with increasing delay.
+- Attempts stop at the configured maximum of 3.
+- Job is marked failed/dead-lettered.
+- Worker process stays alive.
+
+
+SECTION 13 - API-LEVEL CONCURRENCY TESTING
+==========================================
+
+Manual browser clicks are useful, but they do not guarantee that requests are
+simultaneous. For exact concurrency, run a script from a machine that can
+reach the deployed backend.
+
+Use:
+
+   Python 3
+   httpx
+   asyncio
+
+Test patterns:
+
+1. Login Account A and Account B.
+2. Create one fresh unassigned item.
+3. Use asyncio.gather() to send both claim requests together.
+4. Print both status codes and response bodies.
+5. Fetch the item afterward and verify final state.
+
+Expected claim result:
+
+   statuses == [200, 409] in either order
+
+Repeat the same technique for:
+
+- two stale PATCH requests
+- two transitions
+- two identical creates with one idempotency key
+- multiple simultaneous comments
+
+Do not place passwords, tokens, or secret values in committed scripts or logs.
+Use environment variables for temporary local test execution.
+
+
+SECTION 14 - PERFORMANCE AND SCALE TESTS
+========================================
+
+Run only after functional and concurrency tests pass.
+
+Start with:
+
+   2 concurrent users
+   10 concurrent users
+   50 concurrent users
+   100 concurrent users
+
+Scenarios:
+
+PERF-001: 20 users claim one item
+Expected: exactly 1 success and 19 conflicts.
+
+PERF-002: 20 users edit one item with the same version
+Expected: exactly 1 success; remaining requests must not overwrite it.
+
+PERF-003: 100 users create separate items
+Expected: 100 successful logical items and no missing records.
+
+PERF-004: 50 duplicate creates with one idempotency key
+Expected: one logical item only.
+
+PERF-005: 20 users add comments
+Expected: 20 comments preserved.
+
+Capture:
+
+- total requests
+- successful requests
+- 4xx conflicts
+- 5xx responses
+- p50 latency
+- p95 latency
+- p99 latency
+- database CPU/connections
+- Redis memory/connections
+- worker queue depth
+- failed/retried outbox jobs
+
+
+SECTION 15 - FINAL PASS/FAIL CRITERIA
+=====================================
+
+PASS only if all of the following are true:
+
+1. Frontend loads from the public URL.
+2. Backend health endpoint returns HTTP 200.
+3. Frontend API calls reach the public backend correctly.
+4. Two isolated accounts can remain logged in simultaneously.
+5. Exactly one concurrent claim succeeds.
+6. Stale edits cannot overwrite newer edits.
+7. Concurrent transitions do not silently overwrite each other.
+8. Duplicate idempotent requests create one logical record.
+9. Comments from both users are preserved.
+10. Cross-team access is rejected by the backend.
+11. Viewer and Member restrictions are enforced by the backend.
+12. Activity timeline matches successful actions only.
+13. Outbox jobs are eventually processed.
+14. No unexpected HTTP 500 errors occur.
+15. No secrets are exposed in browser logs, URLs, screenshots, or reports.
+
+FAIL immediately if any of these occur:
+
+- Both users claim the same item successfully.
+- A stale edit overwrites a newer edit.
+- Both conflicting transitions return success and one disappears.
+- A duplicate request creates duplicate records.
+- An outsider can read or mutate another team's item.
+- The browser sends requests to an internal Docker hostname.
+- The public API has unrestricted development-only user switching.
+
+
+SECTION 16 - TEST REPORT TEMPLATE
+=================================
+
+Deployment:
+   Frontend URL:
+   Backend URL:
+   Health URL:
+   Deployment date/time:
+   Git commit:
+
+Accounts:
+   Account A:
+   Account B:
+   Teams/roles:
+
+Summary:
+   Total tests:
+   Passed:
+   Failed:
+   Blocked:
+
+Critical results:
+   Concurrent claim:
+   Stale edit:
+   Concurrent transition:
+   Duplicate idempotency request:
+   Cross-team access:
+   Worker recovery:
+
+Known issues:
+   1.
+   2.
+   3.
+
+Evidence locations:
+   Screenshots:
+   API responses:
+   Logs:
+   Performance report:
+
+Final decision:
+   [ ] Ready for wider testing
+   [ ] Not ready; fixes required
