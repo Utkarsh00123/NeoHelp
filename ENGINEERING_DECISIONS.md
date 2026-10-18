@@ -89,3 +89,25 @@ This document tracks foundational architectural decisions across development pha
   3. Transactional Outbox table (`outbox_jobs`) committed in the exact same ACID transaction as the primary entity, polled by a dedicated worker using `FOR UPDATE SKIP LOCKED`, deduplicated via Redis, with exponential backoff and a hard failure cap (`max_attempts = 3`).
 * **Choice:** Option 3. Guarantees zero lost jobs and strict at-least-once delivery. Handlers are made idempotent via `dedupe_key` caching in Redis. If repeated failures occur, jobs are marked `FAILED` after 3 attempts without crashing the worker loop.
 * **Trade-off:** Introduces a slight asynchronous lag (~1 second) between database commit and background processing, but eliminates dual-write corruption entirely.
+
+---
+
+### Decision 9: Risk-Based Automated Testing Strategy over Arbitrary Code Coverage
+* **Context (Step 6 / Phase 6 & 7):** Standard code coverage percentages often give a false sense of security by testing happy-path getters while missing dangerous race conditions, authorization leaks, and stale mutations.
+* **Options:**
+  1. Target generic 80%+ line coverage with unit mock tests.
+  2. Manual postman/browser verification only.
+  3. Risk-Based Testing (`test_critical_risk_behaviors.py`) targeting the most dangerous concurrency and security boundaries: parallel claims racing, stale version rejections, repeated idempotency submissions, illegal state jumps, non-Lead approval attempts, and cross-team resource access.
+* **Choice:** Option 3. Implemented automated async test scenarios validating that exactly one parallel claim succeeds and the other receives 409, outdated versions leave database state intact, idempotency keys return identical cached responses, and unauthorized cross-team requests are strictly forbidden.
+* **Trade-off:** Requires writing realistic concurrent tests with `asyncio.gather` and active database state, but prevents the catastrophic production race conditions that matter most.
+
+---
+
+### Decision 10: Timeline-First User Experience with Automatic 409/403 Reconciliation
+* **Context (Step 6 / Phase 6):** Under high operational pressure, operators need immediate visibility into an item's chronological history and what requires attention next, while handling optimistic concurrency conflicts gracefully when multiple teammates work on the same incident.
+* **Options:**
+  1. Standard tabular CRUD dashboard with silent overwrites and manual page reloads.
+  2. Complex WebSocket synchronizer with real-time cursor tracking (violates blueprint constraint).
+  3. Actionable Queue tabs ("Assigned to Me", "Unassigned Urgent", "Awaiting Approval"), vertical audit timeline with event diff badges, and automatic 409 Conflict rollback banners with 1-click state reload.
+* **Choice:** Option 3. A timeline-centered UI that highlights what action is required next, validates valid state transitions on the client while letting the server strictly enforce RBAC gates, and instantly displays an actionable banner with latest server version upon a 409 Conflict.
+* **Trade-off:** Shifts workflow state visualization to the event feed rather than a giant form, but provides crystal-clear audit accountability and seamless conflict recovery.

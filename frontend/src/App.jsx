@@ -1,74 +1,281 @@
-import React from 'react'
-import { useQuery } from '@tanstack/react-query'
+import React, { useState, useEffect } from 'react'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { 
-  Activity, 
-  Database, 
-  Server, 
-  Layers, 
+  Zap,
   Clock, 
   CheckCircle2, 
   AlertTriangle, 
   RefreshCw,
-  GitBranch,
+  UserCheck,
   ShieldCheck,
-  Zap
+  Filter,
+  Plus,
+  Send,
+  MessageSquare,
+  ArrowRight,
+  User,
+  Tag,
+  AlertCircle,
+  FileText,
+  Search,
+  ExternalLink,
+  ChevronDown,
+  Layers,
+  History,
+  X,
+  Lock,
+  Unlock
 } from 'lucide-react'
-import { fetchHealth } from './api/client'
+import { 
+  fetchHealth,
+  loginUser,
+  switchUser,
+  fetchUsers,
+  fetchMe,
+  fetchItems,
+  fetchItem,
+  createItem,
+  claimItem,
+  updateItem,
+  transitionItem,
+  fetchItemActivity,
+  addComment
+} from './api/client'
 import './App.css'
 
+const VALID_TRANSITIONS = {
+  'Open': ['In Progress'],
+  'In Progress': ['Open', 'Awaiting Approval'],
+  'Awaiting Approval': ['In Progress', 'Resolved'],
+  'Resolved': ['Closed', 'In Progress'],
+  'Closed': []
+}
+
 export default function App() {
-  const { data: health, isLoading, isError, error, refetch, isFetching } = useQuery({
+  const queryClient = useQueryClient()
+
+  // App State
+  const [selectedQueue, setSelectedQueue] = useState('all') // 'all' | 'assigned' | 'urgent' | 'approval'
+  const [selectedTeam, setSelectedTeam] = useState('')
+  const [selectedStatus, setSelectedStatus] = useState('')
+  const [selectedPriority, setSelectedPriority] = useState('')
+  const [searchQuery, setSearchQuery] = useState('')
+  const [selectedItemId, setSelectedItemId] = useState(null)
+  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false)
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false)
+  const [conflictBanner, setConflictBanner] = useState(null)
+  const [actionError, setActionError] = useState(null)
+  const [commentText, setCommentText] = useState('')
+  const [transitionComment, setTransitionComment] = useState('')
+  const [targetTransitionStatus, setTargetTransitionStatus] = useState(null)
+
+  // System Health
+  const { data: health } = useQuery({
     queryKey: ['system-health'],
     queryFn: fetchHealth,
+    refetchInterval: 20000,
+  })
+
+  // Users Directory for Role-Switcher
+  const { data: users = [] } = useQuery({
+    queryKey: ['users-directory'],
+    queryFn: fetchUsers,
+  })
+
+  // Current User Profile
+  const { data: currentUser, refetch: refetchMe } = useQuery({
+    queryKey: ['current-user'],
+    queryFn: fetchMe,
+    retry: false,
+  })
+
+  // Initial Auth Bootstrap: auto-login as Diana (Incident Lead) or Alice (Admin) if no token
+  useEffect(() => {
+    const token = localStorage.getItem('neohelp_token')
+    if (!token && users.length > 0) {
+      const defaultUser = users.find(u => u.email === 'lead.incident@neohelp.io') || users[0]
+      loginUser(defaultUser.email, 'password123').then(() => {
+        refetchMe()
+        queryClient.invalidateQueries({ queryKey: ['items'] })
+      })
+    }
+  }, [users, refetchMe, queryClient])
+
+  // Work Items List Query with Cursor
+  const { 
+    data: itemsData, 
+    isLoading: isLoadingItems, 
+    isFetching: isFetchingItems,
+    refetch: refetchItems 
+  } = useQuery({
+    queryKey: ['items', selectedQueue, selectedTeam, selectedStatus, selectedPriority, searchQuery, currentUser?.id],
+    queryFn: () => fetchItems({
+      teamId: selectedTeam || undefined,
+      queue: selectedQueue !== 'all' ? selectedQueue : undefined,
+      status: selectedStatus || undefined,
+      priority: selectedPriority || undefined,
+      q: searchQuery || undefined,
+      limit: 30
+    }),
+    enabled: !!currentUser,
     refetchInterval: 15000,
   })
 
-  // Sample timeline operational activities representing chronology
-  const sampleTimelineEvents = [
-    {
-      id: 'OP-1042',
-      title: 'Database Failover Drill Initiated',
-      type: 'Compliance',
-      priority: 'urgent',
-      time: '10 mins ago',
-      author: 'Sarah Chen (Lead)',
-      summary: 'Automated failover protocol initiated across US-East replicas to verify zero-downtime replication.',
-    },
-    {
-      id: 'OP-1041',
-      title: 'API Gateway Rate-Limit Policy Shift',
-      type: 'Incident',
-      priority: 'active',
-      time: '34 mins ago',
-      author: 'Marcus Vance (Member)',
-      summary: 'Spike in inbound requests on /v1/telemetry mitigated via dynamic token bucket throttle adjustment.',
-    },
-    {
-      id: 'OP-1039',
-      title: 'Audit Log Archival & Signature Verification',
-      type: 'Compliance',
-      priority: 'resolved',
-      time: '2 hours ago',
-      author: 'System Outbox Worker',
-      summary: 'Monthly cryptographic checksum verification complete. Zero integrity discrepancies detected.',
-    },
-  ]
+  // Selected Item Detail Query
+  const { data: selectedItem, refetch: refetchSelectedItem } = useQuery({
+    queryKey: ['item', selectedItemId],
+    queryFn: () => fetchItem(selectedItemId),
+    enabled: !!selectedItemId,
+  })
 
-  const dbStatus = health?.database?.includes('healthy') ? 'healthy' : isError ? 'error' : 'degraded'
-  const redisStatus = health?.redis?.includes('healthy') ? 'healthy' : isError ? 'error' : 'degraded'
-  const apiStatus = (!isLoading && !isError) ? 'healthy' : isLoading ? 'degraded' : 'error'
+  // Selected Item Activity Timeline Query
+  const { data: itemActivity = [], refetch: refetchActivity } = useQuery({
+    queryKey: ['item-activity', selectedItemId],
+    queryFn: () => fetchItemActivity(selectedItemId),
+    enabled: !!selectedItemId,
+    refetchInterval: 10000,
+  })
+
+  // Auto-select first item if none selected and items loaded
+  useEffect(() => {
+    if (!selectedItemId && itemsData?.items?.length > 0) {
+      setSelectedItemId(itemsData.items[0].id)
+    }
+  }, [itemsData, selectedItemId])
+
+  // Switch User Handler
+  const handleSwitchUser = async (userId) => {
+    try {
+      await switchUser(userId)
+      setConflictBanner(null)
+      setActionError(null)
+      await refetchMe()
+      await queryClient.invalidateQueries({ queryKey: ['items'] })
+      if (selectedItemId) {
+        await queryClient.invalidateQueries({ queryKey: ['item', selectedItemId] })
+      }
+    } catch (err) {
+      setActionError(err.message)
+    }
+  }
+
+  // Claim Item Mutation
+  const claimMutation = useMutation({
+    mutationFn: () => claimItem(selectedItemId, `claim-${selectedItemId}-${Date.now()}`),
+    onSuccess: (updated) => {
+      setConflictBanner(null)
+      setActionError(null)
+      queryClient.setQueryData(['item', selectedItemId], updated)
+      refetchItems()
+      refetchActivity()
+    },
+    onError: (err) => {
+      if (err.status === 409) {
+        setConflictBanner({
+          type: '409 Conflict',
+          message: err.message || 'Work item was claimed by another operator concurrently.',
+          action: () => {
+            refetchSelectedItem()
+            refetchItems()
+            setConflictBanner(null)
+          }
+        })
+      } else {
+        setActionError(err.message)
+      }
+    }
+  })
+
+  // Transition Item Mutation
+  const transitionMutation = useMutation({
+    mutationFn: ({ targetStatus, comment }) => 
+      transitionItem(selectedItemId, { target_status: targetStatus, comment }, `trans-${selectedItemId}-${targetStatus}-${Date.now()}`),
+    onSuccess: (updated) => {
+      setConflictBanner(null)
+      setActionError(null)
+      setTargetTransitionStatus(null)
+      setTransitionComment('')
+      queryClient.setQueryData(['item', selectedItemId], updated)
+      refetchItems()
+      refetchActivity()
+    },
+    onError: (err) => {
+      if (err.status === 403) {
+        setActionError(`Permission Denied: ${err.message}`)
+      } else if (err.status === 409) {
+        setConflictBanner({
+          type: '409 Conflict',
+          message: err.message || 'Item was updated by another operator.',
+          action: () => {
+            refetchSelectedItem()
+            refetchItems()
+            setConflictBanner(null)
+          }
+        })
+      } else {
+        setActionError(err.message)
+      }
+    }
+  })
+
+  // Add Comment Mutation
+  const commentMutation = useMutation({
+    mutationFn: (text) => addComment(selectedItemId, text),
+    onSuccess: () => {
+      setCommentText('')
+      setActionError(null)
+      refetchActivity()
+    },
+    onError: (err) => {
+      setActionError(err.message)
+    }
+  })
+
+  // Helpers for RBAC checks
+  const currentMembership = currentUser?.memberships?.find(m => m.team_id === selectedItem?.team_id)
+  const isTeamLeadOrAdmin = currentMembership?.role === 'Lead' || currentMembership?.role === 'Admin'
+  const isViewer = currentMembership?.role === 'Viewer'
+
+  // Calculate Next Attention text
+  const getNextAttentionText = (item) => {
+    if (!item) return ''
+    if (!item.assignee_id) {
+      return 'Unassigned — Needs immediate operator claim to begin operational triage.'
+    }
+    if (item.status === 'Open') {
+      return 'Assigned & Open — Transition to "In Progress" when active investigation begins.'
+    }
+    if (item.status === 'In Progress') {
+      return 'Active Investigation — Execute mitigation steps and transition to "Awaiting Approval".'
+    }
+    if (item.status === 'Awaiting Approval') {
+      return isTeamLeadOrAdmin 
+        ? 'Approval Gate — Awaiting your Lead/Admin decision to Resolve this item.' 
+        : 'Approval Gate — Awaiting review by Team Lead or Admin.'
+    }
+    if (item.status === 'Resolved') {
+      return isTeamLeadOrAdmin 
+        ? 'Verification Complete — Close item to archive operational log.' 
+        : 'Resolved — Pending final Lead verification.'
+    }
+    return 'Archived — All operational criteria satisfied.'
+  }
+
+  const dbStatus = health?.database?.includes('healthy') ? 'healthy' : 'degraded'
+  const redisStatus = health?.redis?.includes('healthy') ? 'healthy' : 'degraded'
+  const apiStatus = health ? 'healthy' : 'degraded'
 
   return (
     <div className="app-container">
-      {/* Header */}
-      <header className="app-header">
+      {/* Top Header */}
+      <header className="app-header glass-panel">
         <div className="brand-wrapper">
           <div className="brand-logo-badge" id="brand-logo">
             <Zap size={24} />
           </div>
           <div>
             <h1 className="brand-title">NeoHelp</h1>
-            <p className="brand-tagline">Operational Task & Incident Chronology Platform</p>
+            <p className="brand-tagline">Timeline-First Operational Command Platform</p>
           </div>
         </div>
 
@@ -76,7 +283,7 @@ export default function App() {
         <div className="status-ribbon" id="system-status-ribbon">
           <div className="status-indicator-item">
             <span className={`status-dot ${apiStatus}`} />
-            <span>FastAPI Backend</span>
+            <span>FastAPI</span>
           </div>
           <div className="status-indicator-item">
             <span className={`status-dot ${dbStatus}`} />
@@ -84,127 +291,651 @@ export default function App() {
           </div>
           <div className="status-indicator-item">
             <span className={`status-dot ${redisStatus}`} />
-            <span>Redis</span>
+            <span>Redis Outbox</span>
           </div>
+        </div>
+
+        {/* User Role Switcher Dropdown */}
+        <div className="user-switcher-container">
+          <div className="current-user-info">
+            <div className="user-avatar-circle">
+              <User size={16} />
+            </div>
+            <div>
+              <div className="user-name-display">{currentUser?.full_name || 'Loading...'}</div>
+              <div className="user-role-display">
+                {currentUser?.memberships?.map(m => `${m.team_name}: ${m.role}`).join(' • ') || 'No Teams'}
+              </div>
+            </div>
+          </div>
+
+          <select 
+            className="user-select-dropdown"
+            value={currentUser?.id || ''}
+            onChange={(e) => handleSwitchUser(e.target.value)}
+            id="role-switcher-dropdown"
+          >
+            {users.map(u => (
+              <option key={u.id} value={u.id}>
+                {u.full_name} ({u.email.split('@')[0]})
+              </option>
+            ))}
+          </select>
         </div>
       </header>
 
-      {/* Main Grid: Timeline feed + System Info Panel */}
-      <main className="dashboard-grid">
-        {/* Timeline Event Feed */}
-        <section className="timeline-section">
-          <div className="section-header">
-            <h2 className="section-title">
-              <Clock size={20} color="var(--accent-primary)" />
-              Operational Timeline Feed
-            </h2>
-            <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-              Phase 1 Scaffold Active
-            </span>
+      {/* Conflict / Concurrency Alert Toast */}
+      {conflictBanner && (
+        <div className="alert-banner conflict-alert" id="conflict-toast-banner">
+          <div className="alert-content">
+            <AlertCircle size={20} color="var(--accent-warning)" />
+            <div>
+              <strong>{conflictBanner.type}:</strong> {conflictBanner.message}
+            </div>
+          </div>
+          <button className="btn btn-warning-sm" onClick={conflictBanner.action}>
+            <RefreshCw size={14} /> Reload Latest Server State
+          </button>
+        </div>
+      )}
+
+      {/* Permission / Action Error Toast */}
+      {actionError && (
+        <div className="alert-banner error-alert" id="action-error-banner">
+          <div className="alert-content">
+            <AlertTriangle size={20} color="var(--accent-danger)" />
+            <div>{actionError}</div>
+          </div>
+          <button className="btn-icon" onClick={() => setActionError(null)}>
+            <X size={16} />
+          </button>
+        </div>
+      )}
+
+      {/* Actionable Queues Bar */}
+      <section className="queues-navbar glass-panel">
+        <div className="queues-tabs">
+          <button 
+            className={`queue-tab ${selectedQueue === 'all' ? 'active' : ''}`}
+            onClick={() => setSelectedQueue('all')}
+            id="tab-all-items"
+          >
+            <Layers size={16} />
+            All Items
+          </button>
+          <button 
+            className={`queue-tab ${selectedQueue === 'assigned' ? 'active' : ''}`}
+            onClick={() => setSelectedQueue('assigned')}
+            id="tab-assigned-to-me"
+          >
+            <UserCheck size={16} />
+            Assigned to Me
+          </button>
+          <button 
+            className={`queue-tab ${selectedQueue === 'urgent' ? 'active' : ''}`}
+            onClick={() => setSelectedQueue('urgent')}
+            id="tab-unassigned-urgent"
+          >
+            <AlertTriangle size={16} />
+            Unassigned Urgent
+          </button>
+          <button 
+            className={`queue-tab ${selectedQueue === 'approval' ? 'active' : ''}`}
+            onClick={() => setSelectedQueue('approval')}
+            id="tab-awaiting-approval"
+          >
+            <ShieldCheck size={16} />
+            Awaiting Approval
+          </button>
+        </div>
+
+        <button 
+          className="btn btn-primary"
+          onClick={() => setIsCreateModalOpen(true)}
+          id="btn-create-work-item"
+        >
+          <Plus size={16} />
+          New Work Item
+        </button>
+      </section>
+
+      {/* Main Workspace Layout: Left Sidebar Filter + Items List + Right Timeline Detail */}
+      <div className="workspace-layout">
+        {/* Left Column: Filter & Items Feed */}
+        <section className="items-list-pane glass-panel">
+          {/* Filter Bar */}
+          <div className="filter-controls">
+            <div className="search-box">
+              <Search size={16} className="search-icon" />
+              <input 
+                type="text" 
+                placeholder="Search items by title..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="search-input"
+              />
+              {searchQuery && (
+                <button className="btn-icon" onClick={() => setSearchQuery('')}>
+                  <X size={14} />
+                </button>
+              )}
+            </div>
+
+            <div className="filter-selects">
+              <select 
+                value={selectedTeam} 
+                onChange={(e) => setSelectedTeam(e.target.value)}
+                className="filter-select"
+              >
+                <option value="">All Permitted Teams</option>
+                {currentUser?.memberships?.map(m => (
+                  <option key={m.team_id} value={m.team_id}>{m.team_name} ({m.role})</option>
+                ))}
+              </select>
+
+              <select 
+                value={selectedPriority} 
+                onChange={(e) => setSelectedPriority(e.target.value)}
+                className="filter-select"
+              >
+                <option value="">Any Priority</option>
+                <option value="urgent">Urgent</option>
+                <option value="high">High</option>
+                <option value="medium">Medium</option>
+                <option value="low">Low</option>
+              </select>
+
+              <select 
+                value={selectedStatus} 
+                onChange={(e) => setSelectedStatus(e.target.value)}
+                className="filter-select"
+              >
+                <option value="">Any Status</option>
+                <option value="Open">Open</option>
+                <option value="In Progress">In Progress</option>
+                <option value="Awaiting Approval">Awaiting Approval</option>
+                <option value="Resolved">Resolved</option>
+                <option value="Closed">Closed</option>
+              </select>
+            </div>
           </div>
 
-          <div className="timeline-list">
-            <div className="timeline-line" />
-            {sampleTimelineEvents.map((event) => (
-              <article key={event.id} className="timeline-card glass-panel" id={`item-${event.id}`}>
-                <div className="timeline-card-anchor">
-                  <div className="timeline-dot" />
-                </div>
-                <div className="timeline-card-header">
-                  <div>
-                    <span className={`timeline-badge ${event.priority}`}>{event.priority}</span>
-                    <span style={{ marginLeft: '0.5rem', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                      #{event.id} • {event.type}
-                    </span>
-                  </div>
-                  <span className="timeline-time">{event.time}</span>
-                </div>
-                <h3 className="timeline-item-title">{event.title}</h3>
-                <p className="timeline-item-desc">{event.summary}</p>
-                <div className="timeline-meta-bar">
-                  <span>Actor: <strong style={{ color: 'var(--text-primary)' }}>{event.author}</strong></span>
-                  <span>•</span>
-                  <span>State: Open</span>
-                </div>
-              </article>
-            ))}
+          {/* Items Scrollable List */}
+          <div className="items-scroll-area">
+            {isLoadingItems ? (
+              <div className="pane-loader">
+                <RefreshCw size={24} className="spin-icon" />
+                <span>Fetching items...</span>
+              </div>
+            ) : itemsData?.items?.length === 0 ? (
+              <div className="pane-empty">
+                <FileText size={32} color="var(--text-muted)" />
+                <p>No operational items match this queue or filter.</p>
+              </div>
+            ) : (
+              itemsData?.items?.map(item => {
+                const isSelected = item.id === selectedItemId
+                return (
+                  <article 
+                    key={item.id}
+                    className={`item-summary-card ${isSelected ? 'selected' : ''}`}
+                    onClick={() => {
+                      setSelectedItemId(item.id)
+                      setConflictBanner(null)
+                      setActionError(null)
+                    }}
+                    id={`item-card-${item.id}`}
+                  >
+                    <div className="item-card-top">
+                      <span className={`priority-pill ${item.priority}`}>
+                        {item.priority}
+                      </span>
+                      <span className={`status-pill ${item.status.toLowerCase().replace(/\s+/g, '-')}`}>
+                        {item.status}
+                      </span>
+                      <span className="version-pill">v{item.version}</span>
+                    </div>
+
+                    <h3 className="item-card-title">{item.title}</h3>
+
+                    <div className="item-card-meta">
+                      <span className="item-meta-team">{item.team_name}</span>
+                      <span className="item-meta-assignee">
+                        {item.assignee_name ? `Assignee: ${item.assignee_name}` : 'Unassigned'}
+                      </span>
+                    </div>
+                  </article>
+                )
+              })
+            )}
           </div>
         </section>
 
-        {/* Sidebar Info & Health Check */}
-        <aside className="sidebar-section">
-          <div className="glass-panel health-panel" id="health-check-panel">
-            <h2 className="panel-title">
-              <Activity size={18} color="var(--accent-secondary)" />
-              Infrastructure Diagnostics
-            </h2>
+        {/* Right Column: Timeline-First Detail View */}
+        <section className="timeline-detail-pane glass-panel">
+          {selectedItem ? (
+            <div className="item-detail-content">
+              {/* Item Header & Metadata */}
+              <div className="item-detail-header">
+                <div className="item-detail-badges">
+                  <span className={`priority-pill ${selectedItem.priority}`}>{selectedItem.priority}</span>
+                  <span className={`status-pill ${selectedItem.status.toLowerCase().replace(/\s+/g, '-')}`}>
+                    {selectedItem.status}
+                  </span>
+                  <span className="version-pill">v{selectedItem.version}</span>
+                  <span className="type-pill">{selectedItem.type}</span>
+                </div>
 
-            <div className="health-metrics-grid">
-              <div className="metric-row">
-                <span className="metric-label">
-                  <Server size={16} /> Backend API
-                </span>
-                <span className="metric-val" style={{ color: apiStatus === 'healthy' ? 'var(--accent-success)' : 'var(--accent-warning)' }}>
-                  {isLoading ? 'Checking...' : isError ? 'Unreachable' : 'Online'}
-                </span>
+                <div className="item-detail-actions-top">
+                  <button 
+                    className="btn btn-secondary-sm"
+                    onClick={() => setIsEditModalOpen(true)}
+                    disabled={isViewer}
+                  >
+                    Edit Details
+                  </button>
+                </div>
               </div>
 
-              <div className="metric-row">
-                <span className="metric-label">
-                  <Database size={16} /> PostgreSQL
-                </span>
-                <span className="metric-val" style={{ color: dbStatus === 'healthy' ? 'var(--accent-success)' : 'var(--accent-muted)' }}>
-                  {health?.database || (isLoading ? 'Connecting...' : 'Pending')}
-                </span>
+              <h2 className="item-detail-title">{selectedItem.title}</h2>
+              <p className="item-detail-description">{selectedItem.description}</p>
+
+              {/* What Requires Attention Next Banner */}
+              <div className="attention-card glass-panel">
+                <div className="attention-header">
+                  <Clock size={18} color="var(--accent-primary)" />
+                  <strong>What requires attention next:</strong>
+                </div>
+                <p className="attention-body">{getNextAttentionText(selectedItem)}</p>
+
+                {/* Inline Action Bar */}
+                <div className="attention-action-bar">
+                  {/* Claim Button */}
+                  {!selectedItem.assignee_id && (
+                    <button 
+                      className="btn btn-primary-sm"
+                      onClick={() => claimMutation.mutate()}
+                      disabled={claimMutation.isPending || isViewer}
+                      id="btn-claim-item"
+                    >
+                      <UserCheck size={14} />
+                      {claimMutation.isPending ? 'Claiming...' : 'Claim Item'}
+                    </button>
+                  )}
+
+                  {/* Valid State Transitions */}
+                  {VALID_TRANSITIONS[selectedItem.status]?.map(targetStatus => {
+                    const requiresLead = ['Resolved', 'Closed'].includes(targetStatus)
+                    const canAdvance = !requiresLead || isTeamLeadOrAdmin
+                    return (
+                      <button 
+                        key={targetStatus}
+                        className={`btn btn-secondary-sm ${requiresLead ? 'btn-lead-gate' : ''}`}
+                        onClick={() => setTargetTransitionStatus(targetStatus)}
+                        disabled={transitionMutation.isPending || isViewer || !canAdvance}
+                        title={requiresLead && !isTeamLeadOrAdmin ? 'Lead/Admin role required' : ''}
+                      >
+                        {requiresLead && <ShieldCheck size={14} />}
+                        Move to {targetStatus}
+                      </button>
+                    )
+                  })}
+                </div>
               </div>
 
-              <div className="metric-row">
-                <span className="metric-label">
-                  <Layers size={16} /> Redis Cache
-                </span>
-                <span className="metric-val" style={{ color: redisStatus === 'healthy' ? 'var(--accent-success)' : 'var(--accent-muted)' }}>
-                  {health?.redis || (isLoading ? 'Connecting...' : 'Pending')}
-                </span>
-              </div>
+              {/* Transition Confirmation Dialog */}
+              {targetTransitionStatus && (
+                <div className="transition-confirm-panel glass-panel">
+                  <h4>Confirm State Transition: {selectedItem.status} → {targetTransitionStatus}</h4>
+                  <input 
+                    type="text" 
+                    placeholder="Optional transition reason or sign-off note..."
+                    value={transitionComment}
+                    onChange={(e) => setTransitionComment(e.target.value)}
+                    className="form-input"
+                  />
+                  <div className="modal-actions">
+                    <button 
+                      className="btn btn-secondary-sm" 
+                      onClick={() => setTargetTransitionStatus(null)}
+                    >
+                      Cancel
+                    </button>
+                    <button 
+                      className="btn btn-primary-sm"
+                      onClick={() => transitionMutation.mutate({ 
+                        targetStatus: targetTransitionStatus, 
+                        comment: transitionComment 
+                      })}
+                      disabled={transitionMutation.isPending}
+                    >
+                      {transitionMutation.isPending ? 'Advancing...' : 'Confirm Transition'}
+                    </button>
+                  </div>
+                </div>
+              )}
 
-              <div className="metric-row">
-                <span className="metric-label">
-                  <ShieldCheck size={16} /> Environment
-                </span>
-                <span className="metric-val">
-                  {health?.environment || 'development'}
-                </span>
+              {/* Vertical Chronological Timeline */}
+              <div className="activity-timeline-section">
+                <div className="timeline-header-bar">
+                  <h3 className="timeline-section-heading">
+                    <History size={18} color="var(--accent-secondary)" />
+                    Activity & Audit Chronology ({itemActivity.length} events)
+                  </h3>
+                </div>
+
+                <div className="vertical-timeline-container">
+                  <div className="vertical-timeline-track" />
+                  
+                  {itemActivity.map((event, idx) => (
+                    <div key={event.id || idx} className="timeline-event-row">
+                      <div className="timeline-event-marker">
+                        <div className={`event-marker-dot ${event.event_type}`} />
+                      </div>
+                      <div className="timeline-event-card glass-panel">
+                        <div className="event-meta-line">
+                          <span className="event-actor-name">{event.actor_name || 'System Operator'}</span>
+                          <span className={`event-type-badge ${event.event_type}`}>{event.event_type}</span>
+                          <span className="event-timestamp">
+                            {new Date(event.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', month: 'short', day: 'numeric' })}
+                          </span>
+                        </div>
+
+                        {event.comment_body && (
+                          <div className="event-body-text">{event.comment_body}</div>
+                        )}
+
+                        {event.old_value && event.new_value && (
+                          <div className="event-diff-block">
+                            {Object.keys(event.new_value).map(k => (
+                              <div key={k} className="diff-item">
+                                <span className="diff-key">{k}:</span> 
+                                <span className="diff-old">{String(event.old_value?.[k] ?? '—')}</span>
+                                <ArrowRight size={12} className="diff-arrow" />
+                                <span className="diff-new">{String(event.new_value?.[k])}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Add Comment Input Box */}
+                <div className="timeline-add-comment glass-panel">
+                  <input 
+                    type="text"
+                    placeholder={isViewer ? 'Viewer role is read-only' : 'Post operational update or timeline comment...'}
+                    value={commentText}
+                    onChange={(e) => setCommentText(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && commentText.trim() && !isViewer) {
+                        commentMutation.mutate(commentText)
+                      }
+                    }}
+                    disabled={isViewer || commentMutation.isPending}
+                    className="comment-input"
+                  />
+                  <button 
+                    className="btn btn-primary-sm"
+                    onClick={() => commentMutation.mutate(commentText)}
+                    disabled={!commentText.trim() || isViewer || commentMutation.isPending}
+                  >
+                    <Send size={14} />
+                    {commentMutation.isPending ? 'Posting...' : 'Post'}
+                  </button>
+                </div>
               </div>
             </div>
+          ) : (
+            <div className="pane-empty">
+              <Clock size={36} color="var(--text-muted)" />
+              <p>Select an operational work item from the feed to view its chronology.</p>
+            </div>
+          )}
+        </section>
+      </div>
 
-            <button 
-              id="refetch-health-btn" 
-              className="action-btn-primary" 
-              onClick={() => refetch()} 
-              disabled={isFetching}
-            >
-              <RefreshCw size={16} className={isFetching ? 'spin' : ''} />
-              {isFetching ? 'Verifying Services...' : 'Refresh Health Check'}
+      {/* New Work Item Modal */}
+      {isCreateModalOpen && (
+        <CreateItemModal 
+          currentUser={currentUser}
+          onClose={() => setIsCreateModalOpen(false)}
+          onSuccess={(newItem) => {
+            setIsCreateModalOpen(false)
+            queryClient.invalidateQueries({ queryKey: ['items'] })
+            setSelectedItemId(newItem.id)
+          }}
+        />
+      )}
+
+      {/* Edit Work Item Modal (with Optimistic Locking) */}
+      {isEditModalOpen && selectedItem && (
+        <EditItemModal 
+          item={selectedItem}
+          onClose={() => setIsEditModalOpen(false)}
+          onSuccess={(updated) => {
+            setIsEditModalOpen(false)
+            setConflictBanner(null)
+            queryClient.setQueryData(['item', selectedItem.id], updated)
+            refetchItems()
+            refetchActivity()
+          }}
+          onConflict={(err) => {
+            setIsEditModalOpen(false)
+            setConflictBanner({
+              type: '409 Conflict',
+              message: err.message || 'Item was updated by another operator while you were editing.',
+              action: () => {
+                refetchSelectedItem()
+                refetchItems()
+                setConflictBanner(null)
+              }
+            })
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+// Modal Component for Creating Work Item
+function CreateItemModal({ currentUser, onClose, onSuccess }) {
+  const [title, setTitle] = useState('')
+  const [description, setDescription] = useState('')
+  const [type, setType] = useState('incident')
+  const [priority, setPriority] = useState('high')
+  const [teamId, setTeamId] = useState(currentUser?.memberships?.[0]?.team_id || '')
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [error, setError] = useState(null)
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    setIsSubmitting(true)
+    setError(null)
+
+    try {
+      const idempotencyKey = `create-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`
+      const newItem = await createItem({
+        title,
+        description,
+        type,
+        priority,
+        team_id: teamId,
+      }, idempotencyKey)
+      onSuccess(newItem)
+    } catch (err) {
+      setError(err.message)
+      setIsSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="modal-backdrop">
+      <div className="modal-dialog glass-panel">
+        <div className="modal-header">
+          <h3>Create Operational Work Item</h3>
+          <button className="btn-icon" onClick={onClose}><X size={18} /></button>
+        </div>
+
+        {error && <div className="alert-banner error-alert">{error}</div>}
+
+        <form onSubmit={handleSubmit} className="modal-form">
+          <div className="form-group">
+            <label>Title</label>
+            <input 
+              type="text" 
+              required
+              value={title} 
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="e.g. Core API Latency Spike in EU-West"
+              className="form-input"
+            />
+          </div>
+
+          <div className="form-group">
+            <label>Description</label>
+            <textarea 
+              rows={3}
+              value={description} 
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Context, symptoms, and impact..."
+              className="form-input"
+            />
+          </div>
+
+          <div className="form-row">
+            <div className="form-group">
+              <label>Team Scope</label>
+              <select 
+                value={teamId} 
+                onChange={(e) => setTeamId(e.target.value)}
+                className="form-input"
+                required
+              >
+                {currentUser?.memberships?.map(m => (
+                  <option key={m.team_id} value={m.team_id}>{m.team_name}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="form-group">
+              <label>Type</label>
+              <select value={type} onChange={(e) => setType(e.target.value)} className="form-input">
+                <option value="incident">Incident</option>
+                <option value="customer_issue">Customer Issue</option>
+                <option value="payment">Payment</option>
+                <option value="compliance">Compliance</option>
+                <option value="task">Task</option>
+              </select>
+            </div>
+
+            <div className="form-group">
+              <label>Priority</label>
+              <select value={priority} onChange={(e) => setPriority(e.target.value)} className="form-input">
+                <option value="urgent">Urgent</option>
+                <option value="high">High</option>
+                <option value="medium">Medium</option>
+                <option value="low">Low</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="modal-actions">
+            <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
+            <button type="submit" className="btn btn-primary" disabled={isSubmitting}>
+              {isSubmitting ? 'Creating...' : 'Create Item'}
             </button>
           </div>
+        </form>
+      </div>
+    </div>
+  )
+}
 
-          {/* Blueprint Step 1 Verification Summary */}
-          <div className="glass-panel health-panel" style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-            <h3 className="panel-title" style={{ fontSize: '0.95rem' }}>
-              <GitBranch size={16} color="var(--accent-primary)" />
-              Monorepo Architecture
-            </h3>
-            <p>
-              Phase 1 setup complete:
-            </p>
-            <ul style={{ paddingLeft: '1.2rem', marginTop: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-              <li><strong>/backend:</strong> FastAPI, Async SQLAlchemy, Redis, Pytest</li>
-              <li><strong>/frontend:</strong> React, Vite, TanStack Query</li>
-              <li><strong>docker-compose.yml:</strong> Multi-service containerization</li>
-            </ul>
+// Modal Component for Editing Item with Optimistic Locking
+function EditItemModal({ item, onClose, onSuccess, onConflict }) {
+  const [title, setTitle] = useState(item.title)
+  const [description, setDescription] = useState(item.description)
+  const [priority, setPriority] = useState(item.priority)
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [error, setError] = useState(null)
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    setIsSubmitting(true)
+    setError(null)
+
+    try {
+      const idempotencyKey = `edit-${item.id}-${Date.now()}`
+      const updated = await updateItem(item.id, {
+        version: item.version, // Required for optimistic lock check
+        title,
+        description,
+        priority
+      }, idempotencyKey)
+      onSuccess(updated)
+    } catch (err) {
+      if (err.status === 409) {
+        onConflict(err)
+      } else {
+        setError(err.message)
+        setIsSubmitting(false)
+      }
+    }
+  }
+
+  return (
+    <div className="modal-backdrop">
+      <div className="modal-dialog glass-panel">
+        <div className="modal-header">
+          <h3>Edit Work Item (Current Version: v{item.version})</h3>
+          <button className="btn-icon" onClick={onClose}><X size={18} /></button>
+        </div>
+
+        {error && <div className="alert-banner error-alert">{error}</div>}
+
+        <form onSubmit={handleSubmit} className="modal-form">
+          <div className="form-group">
+            <label>Title</label>
+            <input 
+              type="text" 
+              required
+              value={title} 
+              onChange={(e) => setTitle(e.target.value)}
+              className="form-input"
+            />
           </div>
-        </aside>
-      </main>
+
+          <div className="form-group">
+            <label>Description</label>
+            <textarea 
+              rows={4}
+              value={description} 
+              onChange={(e) => setDescription(e.target.value)}
+              className="form-input"
+            />
+          </div>
+
+          <div className="form-group">
+            <label>Priority</label>
+            <select value={priority} onChange={(e) => setPriority(e.target.value)} className="form-input">
+              <option value="urgent">Urgent</option>
+              <option value="high">High</option>
+              <option value="medium">Medium</option>
+              <option value="low">Low</option>
+            </select>
+          </div>
+
+          <div className="modal-actions">
+            <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
+            <button type="submit" className="btn btn-primary" disabled={isSubmitting}>
+              {isSubmitting ? 'Saving v' + (item.version + 1) + '...' : 'Save Changes'}
+            </button>
+          </div>
+        </form>
+      </div>
     </div>
   )
 }
