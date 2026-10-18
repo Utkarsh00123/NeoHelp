@@ -56,3 +56,14 @@ This document tracks foundational architectural decisions across development pha
   3. Relational `idempotency_keys` table and `outbox_jobs` table processed asynchronously by worker.
 * **Choice:** Option 3. Mutating requests evaluate `idempotency_keys` with payload hashing. Asynchronous side-effects write to `outbox_jobs` with a `dedupe_key` in the same DB transaction.
 * **Trade-off:** Small write amplification per mutation, but guarantees exactly-once processing semantics and atomic consistency even if the background broker is momentarily unavailable.
+
+---
+
+### Decision 6: Centralized Token Authentication & Resource-Level RBAC Guard
+* **Context (Step 3 / Phase 3):** To avoid unauthorized read/write access across teams and guarantee that role privileges (Viewer read-only, Member transition limits, Lead approval requirements) are tamper-proof, authorization must be validated strictly on the server.
+* **Options:**
+  1. Ad-hoc authorization logic inside individual route handler functions.
+  2. Frontend UI gating only (hiding buttons and fields).
+  3. Centralized `AuthenticatedUser` model and `require_team_role` dependency with role hierarchy mapping (`Admin > Lead > Member > Viewer`).
+* **Choice:** Option 3. Central dependency checks JWT token, loads user memberships, and evaluates permission thresholds on every operation. Non-members receive immediate `403 Forbidden` on read/write; Viewers are blocked from mutating actions; Leads are required for state approval and resolution.
+* **Trade-off:** Fast validation requires loading membership relations on authenticated requests, but completely eliminates cross-tenant data leakage and privilege escalation vulnerabilities.

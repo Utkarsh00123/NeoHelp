@@ -1,0 +1,22 @@
+Section 3: Authorization & Resource-Level Security
+Server-Side Enforcement: The agent must implement a meaningful
+authorization model that is strictly enforced on the server. Relying purely on
+hiding buttons or controls in the frontend user interface is a critical failure.
+PDF + 3
+Authentication & Role Mapping: Implement a simple token-based login utilizing
+the seeded test users. Build backend middleware or dependencies that load the
+authenticated user's specific role (e.g., Viewer, Member, Lead, Admin) for each
+team they belong to.
+PDF + 3
+Resource-Level Scoping: Every single query, read, and write action must be
+scoped to the item's associated team and the user's corresponding role within
+that team. Centralize this logic into a single permission-check function used
+across endpoints.
+PDF + 2
+Strict Access Control: If a user attempts to read, edit, or claim a work item
+belonging to a team they are not a member of, the backend must immediately
+reject the request and return a 403 Forbidden or 404 Not Found error.
+PDF
+Role-Restricted Workflows: Certain workflow transitions must be restricted by
+role. For example, progressing an item to an "Approved" or "Resolved" state
+should specifically require the user to hold a "Lead" role for that item's team.
