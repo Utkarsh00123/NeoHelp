@@ -9,6 +9,14 @@
 
 ---
 
+### 🌐 Live Production Links
+* 🚀 **Live Web Application (Vercel):** [https://neo-help.vercel.app/](https://neo-help.vercel.app/)
+* ⚡ **Live Backend API (Render):** [https://neohelp-backend.onrender.com](https://neohelp-backend.onrender.com)
+* 🩺 **Live System Health Probe:** [https://neohelp-backend.onrender.com/api/health](https://neohelp-backend.onrender.com/api/health)
+* 📖 **Interactive API Documentation:** [https://neohelp-backend.onrender.com/docs](https://neohelp-backend.onrender.com/docs)
+
+---
+
 <p align="center">
   <img src="docs/images/dashboard_preview.png" alt="NeoHelp Live Operational Dashboard" width="100%">
 </p>
