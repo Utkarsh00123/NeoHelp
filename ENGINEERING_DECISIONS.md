@@ -78,3 +78,14 @@ This document tracks foundational architectural decisions across development pha
   3. Conditional atomic updates (`WHERE assignee_id IS NULL` for claims), optimistic version checks (`WHERE version = :client_version` for edits), and SHA256 payload hashed `Idempotency-Key` headers.
 * **Choice:** Option 3. Atomic conditional claims ensure exactly one operator succeeds while concurrent contenders receive `409 Conflict`. Optimistic version checks prevent stale overwrites and return current server state for reconciliation. Idempotency keys prevent duplicate mutations on retries.
 * **Trade-off:** Clients must manage retry and reconciliation prompts upon encountering 409 responses, but database lock contention is virtually zero and data integrity is mathematically preserved.
+
+---
+
+### Decision 8: Transactional Outbox Pattern with SKIP LOCKED & Exponential Backoff
+* **Context (Step 5 / Phase 5):** Secondary tasks (notifications, alert broadcasts, audit logging) cannot be performed synchronously in the HTTP request transaction without risking dual-write failures (e.g., DB commits but Redis fails, or Redis publishes but DB transaction rolls back).
+* **Options:**
+  1. Direct Redis publish during the HTTP endpoint execution.
+  2. Database trigger or notification queue without retry state tracking.
+  3. Transactional Outbox table (`outbox_jobs`) committed in the exact same ACID transaction as the primary entity, polled by a dedicated worker using `FOR UPDATE SKIP LOCKED`, deduplicated via Redis, with exponential backoff and a hard failure cap (`max_attempts = 3`).
+* **Choice:** Option 3. Guarantees zero lost jobs and strict at-least-once delivery. Handlers are made idempotent via `dedupe_key` caching in Redis. If repeated failures occur, jobs are marked `FAILED` after 3 attempts without crashing the worker loop.
+* **Trade-off:** Introduces a slight asynchronous lag (~1 second) between database commit and background processing, but eliminates dual-write corruption entirely.

@@ -1,0 +1,24 @@
+Section 5: Asynchronous Processing & Background Jobs
+Transactional Outbox Pattern: To guarantee that secondary tasks (like mocked
+notifications or data enrichment) are processed reliably without risking data
+inconsistency if the main transaction fails, the agent must implement a
+Transactional Outbox pattern.
+PDF + 1
+Atomic Job Creation: When a primary action occurs (e.g., creating a new item
+or reassigning an owner), the server must insert a job record into an outbox or
+jobs table within the exact same database transaction as the primary update.
+PDF + 1
+Reliable Workers: A background worker (e.g., using Redis with a tool like
+BullMQ, Celery, or rq) must independently read these outbox records to execute
+the secondary work.
+PDF + 1
+Failure Handling & Retries: The architecture must account for worker failures.
+The worker must implement automatic retries with exponential backoff and a
+strict maximum attempt limit. If a job repeatedly fails, it must be marked as failed
+rather than crashing the worker loop.
+PDF + 3
+Idempotent Handlers: Because network delays or worker restarts can cause a
+job to be processed more than once, the asynchronous handler must be
+designed to be idempotent. Processing a job twice must result in only a single
+mocked notification or side effect.
+PDF + 2
