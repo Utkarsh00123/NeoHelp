@@ -17,6 +17,14 @@
 
 ---
 
+
+https://github.com/user-attachments/assets/a47db790-f0d3-4bf9-85a8-d03d71f84aaf
+
+
+
+
+---
+
 <p align="center">
   <img src="docs/images/dashboard_preview.png" alt="NeoHelp Live Operational Dashboard" width="100%">
 </p>
