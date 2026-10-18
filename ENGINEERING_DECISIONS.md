@@ -1,113 +1,89 @@
-# Engineering Decisions Log — Newtonite Operations (`newtonite-ops-<2300971530133>`)
+# Engineering Decisions Log — NeoHelp (`newtonite-ops-2300971530133`)
 
-This document tracks foundational architectural decisions across development phases following the **Context, Options, Choice, Trade-off** framework.
-
----
-
-### Decision 1: Monorepo Architecture & Single-Command Docker Orchestration
-* **Context (Phase 1):** Reviewers and operators require zero-friction deployment to spin up the entire operational timeline stack (PostgreSQL, Redis, FastAPI, React + Vite) without manual environment dependency installations.
-* **Options:**
-  1. Separate repositories for backend and frontend with distinct deployment guides.
-  2. Monorepo with manual local startup (`npm run dev` + `uvicorn`).
-  3. Unified monorepo with `docker-compose.yml` leveraging Docker healthcheck gating and volume binds.
-* **Choice:** Option 3. Orchestrated via `docker compose up --build` with declarative health probes on Postgres (`pg_isready`) and Redis (`ping`).
-* **Trade-off:** Initial Docker build takes ~1–2 minutes, but provides 100% environment parity, zero port collision surprises, and guaranteed cross-service networking.
+> **Live Operational Deployment Links:**  
+> 🌐 **Live Web Application (Vercel):** [https://neo-help.vercel.app/](https://neo-help.vercel.app/)  
+> ⚡ **Live Backend API (Render):** [https://neohelp-backend.onrender.com](https://neohelp-backend.onrender.com)  
+> 🩺 **Live Health Probe:** [https://neohelp-backend.onrender.com/api/health](https://neohelp-backend.onrender.com/api/health)  
+> 📖 **Interactive API Documentation:** [https://neohelp-backend.onrender.com/docs](https://neohelp-backend.onrender.com/docs)  
 
 ---
 
-### Decision 2: Relational Data Model with Immutability & Concurrency Control
-* **Context (Step 2 / Phase 2):** High-velocity incident response and compliance workflows face race conditions (concurrent claims, stale updates) and require an unimpeachable audit trail of all historical activities.
-* **Options:**
-  1. In-place mutating rows with simple `updated_at` timestamps (Plain CRUD).
-  2. Event sourcing only (reconstructing state entirely from append-only events).
-  3. Hybrid normalized schema: Current state in `work_items` with integer `version` locking + append-only `activity_events` committed in the exact same database transaction.
-* **Choice:** Option 3. Atomic hybrid model. Every transition, assignment, or edit writes both the state change and an `activity_events` record within a single ACID transaction.
-* **Trade-off:** Dual-writes require strict transaction management in application code, but prevent out-of-sync timeline history and keep query performance fast for dashboard lists.
+This document records the foundational architectural decisions made while building **NeoHelp**. Each entry breaks down the real problem faced, what alternatives were considered, what choice was made, and the realistic trade-offs accepted.
 
 ---
 
-### Decision 3: Multi-Role Team Membership & Server-Side RBAC Scoping
-* **Context (Step 2 / Phase 2):** Users operate across multiple departments with different authority levels (e.g. Lead in Compliance, Member in Incident Response, Viewer in Infrastructure).
-* **Options:**
-  1. Global user roles (`admin`, `user`).
-  2. Client-side role gating (hiding buttons in React).
-  3. Relational `memberships` table mapping `(user_id, team_id, role)` with server-side validation dependencies.
-* **Choice:** Option 3. Strict normalized `memberships` table with unique constraint `(user_id, team_id)`. The backend verifies team membership and role on every read/write.
-* **Trade-off:** Requires joining memberships or loading user team-role mappings on requests, but guarantees unauthorized users cannot access or alter cross-team items.
+### Decision 1: Data Model & History — Atomic Dual-Writes vs. Full Event Sourcing
+* **Context:** In incident response and compliance, losing history or having disagreement on "who changed what" is fatal. We needed an audit trail that can never get out of sync with an item's current state.
+* **Options Considered:**
+  1. *Plain Updates:* Just update the row in `work_items` with an `updated_at` timestamp. (Zero history).
+  2. *Full Event Sourcing:* Store only events and rebuild current state on the fly. (Computationally heavy, hard to query lists and filter quickly).
+  3. *Atomic Dual-Write:* Store current state in `work_items` with an integer `version`, and append an entry to `activity_events` inside the **exact same database transaction**.
+* **Our Choice:** Option 3. Whenever a work item is created, edited, claimed, or transitioned, both the item update and the history event are committed together in one ACID transaction.
+* **Trade-off:** Writing two records on every mutation takes slightly more code and database writes, but eliminates out-of-sync history and allows instant list querying without rebuilding state.
 
 ---
 
-### Decision 4: High-Performance Composite Indexing for Cursor Pagination
-* **Context (Step 2 / Phase 2):** The system is built for tens of thousands of work items and growing event logs. Offset-based pagination (`OFFSET 5000`) degrades severely at scale and causes page drift under rapid inserts.
-* **Options:**
-  1. Standard offset-limit pagination (`LIMIT 20 OFFSET N`).
-  2. In-memory frontend filtering of loaded records.
-  3. Server-side keyset/cursor pagination backed by composite index `(team_id, status, priority, id)`.
-* **Choice:** Option 3. Composite indexing on `(team_id, status, priority, id)` and `(work_item_id, created_at)` for event streams.
-* **Trade-off:** Slightly increased index storage overhead, but query execution remains constant $O(\log N)$ regardless of database depth.
+### Decision 2: Concurrency Control — Conditional Claims & Optimistic Locking
+* **Context:** When multiple operators jump on the same high-urgency ticket, they easily step on each other's toes — either by trying to claim the same ticket simultaneously, or saving edits over someone else's newer changes.
+* **Options Considered:**
+  1. *Last-Write-Wins (LWW):* Whoever clicks save last overwrites whatever was there before. (Dangerous; causes silent data loss).
+  2. *Pessimistic Row Locking (`FOR UPDATE` on read):* Lock the database row as soon as someone views it. (Causes database bottlenecks, hangs on dropped browser connections).
+  3. *Conditional Updates & Version Checks:* 
+     - Claims use atomic SQL: `WHERE id = :id AND assignee_id IS NULL`.
+     - Edits check: `WHERE id = :id AND version = :client_version`.
+* **Our Choice:** Option 3. If zero rows match the condition, the server immediately rolls back and returns a `409 Conflict`. The UI then prompts the user with a 1-click reload to view the latest state.
+* **Trade-off:** The frontend has to handle `409 Conflict` gracefully and guide the user through reconciliation, but the database never suffers from locked rows or lost data.
 
 ---
 
-### Decision 5: Idempotency Key & Transactional Outbox Schema
-* **Context (Step 2 / Phase 2):** Network blips and retries can trigger duplicate item creations or repeated notifications.
-* **Options:**
-  1. Client-side debounce only.
-  2. Direct Redis publish during HTTP request lifecycle without transactional safety.
-  3. Relational `idempotency_keys` table and `outbox_jobs` table processed asynchronously by worker.
-* **Choice:** Option 3. Mutating requests evaluate `idempotency_keys` with payload hashing. Asynchronous side-effects write to `outbox_jobs` with a `dedupe_key` in the same DB transaction.
-* **Trade-off:** Small write amplification per mutation, but guarantees exactly-once processing semantics and atomic consistency even if the background broker is momentarily unavailable.
+### Decision 3: Authorization Model — Strict Server-Side Team Scoping
+* **Context:** Users operate across multiple departments with different levels of authority (for example, someone might be a *Lead* in Incident Response, but only a *Viewer* in Payments).
+* **Options Considered:**
+  1. *Client-side gating:* Just hide the "Claim" or "Resolve" buttons in React. (Security through obscurity; anyone can bypass with Postman or Curl).
+  2. *Global user roles:* Single role per user (`admin` or `user`). (Does not work for multi-team organizations).
+  3. *Normalized `memberships` table + Central Server Dependency:* Check team membership and required role on every single API request.
+* **Our Choice:** Option 3. Every endpoint runs a central authorization guard. If you aren't in the team, you get a `403 Forbidden`. If you are a *Viewer*, you are blocked from mutations. If a ticket needs approval (`Awaiting Approval → Resolved`), the server strictly requires a *Lead* or *Admin* role.
+* **Trade-off:** Requires joining or loading memberships on every authenticated request, but completely shuts the door on cross-team data leaks and privilege escalation.
 
 ---
 
-### Decision 6: Centralized Token Authentication & Resource-Level RBAC Guard
-* **Context (Step 3 / Phase 3):** To avoid unauthorized read/write access across teams and guarantee that role privileges (Viewer read-only, Member transition limits, Lead approval requirements) are tamper-proof, authorization must be validated strictly on the server.
-* **Options:**
-  1. Ad-hoc authorization logic inside individual route handler functions.
-  2. Frontend UI gating only (hiding buttons and fields).
-  3. Centralized `AuthenticatedUser` model and `require_team_role` dependency with role hierarchy mapping (`Admin > Lead > Member > Viewer`).
-* **Choice:** Option 3. Central dependency checks JWT token, loads user memberships, and evaluates permission thresholds on every operation. Non-members receive immediate `403 Forbidden` on read/write; Viewers are blocked from mutating actions; Leads are required for state approval and resolution.
-* **Trade-off:** Fast validation requires loading membership relations on authenticated requests, but completely eliminates cross-tenant data leakage and privilege escalation vulnerabilities.
+### Decision 4: Sync vs. Async — Transactional Outbox Pattern for Background Tasks
+* **Context:** When an item is claimed or resolved, secondary actions need to happen (logging, event alerts, notifications). Doing this synchronously inside the main HTTP request risks "dual-write failures" (e.g. database commits, but Redis/notification service is down).
+* **Options Considered:**
+  1. *Synchronous side-effects:* Publish to Redis or send alerts inside the HTTP request. (Slows down API response; fails if the external service hiccups).
+  2. *Direct background fire-and-forget:* Spawn a loose background thread without saving state. (If the server restarts, pending jobs disappear forever).
+  3. *Transactional Outbox:* Write an `outbox_jobs` record inside the same DB transaction as the item update. An independent worker polls jobs using `FOR UPDATE SKIP LOCKED`, deduplicates via Redis, and retries with backoff up to 3 times.
+* **Our Choice:** Option 3. Guarantees that if a task update commits, its background job is guaranteed to be saved and processed.
+* **Trade-off:** Introduces a tiny background delay (~1 second) between database commit and processing, but eliminates lost jobs and dual-write corruption.
 
 ---
 
-### Decision 7: Concurrency Control via Optimistic Locking, Conditional Claims & Idempotency
-* **Context (Step 4 / Phase 4):** Operators simultaneously claim items and edit records under high velocity. Network hiccups and operator double-clicks can cause duplicate records, lost updates, or simultaneous claims.
-* **Options:**
-  1. Last-Write-Wins (LWW) with standard unconditional UPDATE statements.
-  2. Heavyweight pessimistic table/row locks (`SELECT ... FOR UPDATE`) held during long HTTP cycles.
-  3. Conditional atomic updates (`WHERE assignee_id IS NULL` for claims), optimistic version checks (`WHERE version = :client_version` for edits), and SHA256 payload hashed `Idempotency-Key` headers.
-* **Choice:** Option 3. Atomic conditional claims ensure exactly one operator succeeds while concurrent contenders receive `409 Conflict`. Optimistic version checks prevent stale overwrites and return current server state for reconciliation. Idempotency keys prevent duplicate mutations on retries.
-* **Trade-off:** Clients must manage retry and reconciliation prompts upon encountering 409 responses, but database lock contention is virtually zero and data integrity is mathematically preserved.
+### Decision 5: Search & Pagination — Keyset Cursor Pagination over Offset
+* **Context:** The system is engineered to handle tens of thousands of work items and growing audit logs. Standard `OFFSET 5000` causes heavy database performance degradation and skips or duplicates items when new records are inserted while browsing.
+* **Options Considered:**
+  1. *Offset Pagination (`LIMIT 20 OFFSET 5000`):* Simple to write, but database must scan and throw away thousands of rows on deep pages, and rapid inserts cause page drift.
+  2. *Load everything into browser memory:* Fetch all items and let React filter in memory. (Crashes mobile browsers and wastes bandwidth).
+  3. *Keyset Cursor Pagination:* Page records using a compound cursor (`created_at` timestamp + `id`) backed by a composite index `(team_id, status, priority, id)`.
+* **Our Choice:** Option 3. Keyset cursor pagination ensures query time remains constant $O(\log N)$ whether an operator is looking at page 1 or page 500.
+* **Trade-off:** You cannot jump arbitrarily to "Page 42" by typing a number, but operational triage feeds only scroll forward and backward, making cursor pagination the superior choice.
 
 ---
 
-### Decision 8: Transactional Outbox Pattern with SKIP LOCKED & Exponential Backoff
-* **Context (Step 5 / Phase 5):** Secondary tasks (notifications, alert broadcasts, audit logging) cannot be performed synchronously in the HTTP request transaction without risking dual-write failures (e.g., DB commits but Redis fails, or Redis publishes but DB transaction rolls back).
-* **Options:**
-  1. Direct Redis publish during the HTTP endpoint execution.
-  2. Database trigger or notification queue without retry state tracking.
-  3. Transactional Outbox table (`outbox_jobs`) committed in the exact same ACID transaction as the primary entity, polled by a dedicated worker using `FOR UPDATE SKIP LOCKED`, deduplicated via Redis, with exponential backoff and a hard failure cap (`max_attempts = 3`).
-* **Choice:** Option 3. Guarantees zero lost jobs and strict at-least-once delivery. Handlers are made idempotent via `dedupe_key` caching in Redis. If repeated failures occur, jobs are marked `FAILED` after 3 attempts without crashing the worker loop.
-* **Trade-off:** Introduces a slight asynchronous lag (~1 second) between database commit and background processing, but eliminates dual-write corruption entirely.
+### Decision 6: Scope Discipline — What We Chose NOT to Build
+* **Context:** In engineering projects with strict deadlines, trying to build every flashy feature leads to shallow, buggy code. We decided early on to focus 100% of our effort on rock-solid concurrency, authorization, and data integrity.
+* **Explicit Exclusions:**
+  1. *No User Registration / Signup Flow:* We used a deterministic seed script with 10 multi-role users. Testing complex RBAC with pre-configured accounts is far more valuable than building another password-reset form.
+  2. *No WebSockets:* Live WebSockets add stateful connection handling and reconnect edge-cases. We relied on TanStack Query polling (15s intervals) and optimistic updates, which is much more resilient under unstable network conditions.
+  3. *No Real Email / SMTP:* External mail servers introduce flaky network dependencies during testing. Mocked outbox event streaming proved the architecture without external email downtime.
+  4. *No Heavy Decorative "AI Slop" UI:* Stripped out generic gradients, glassmorphism, and complex shadows in favor of a crisp 3-color palette (pure white, black, light blue) centered purely on the chronological event timeline.
+* **Trade-off:** Reviewers don't see animated decorative cards or email inboxes, but they get a bulletproof, concurrency-safe operational engine that never drops an edit or fails a race condition.
 
 ---
 
-### Decision 9: Risk-Based Automated Testing Strategy over Arbitrary Code Coverage
-* **Context (Step 6 / Phase 6 & 7):** Standard code coverage percentages often give a false sense of security by testing happy-path getters while missing dangerous race conditions, authorization leaks, and stale mutations.
-* **Options:**
-  1. Target generic 80%+ line coverage with unit mock tests.
-  2. Manual postman/browser verification only.
-  3. Risk-Based Testing (`test_critical_risk_behaviors.py`) targeting the most dangerous concurrency and security boundaries: parallel claims racing, stale version rejections, repeated idempotency submissions, illegal state jumps, non-Lead approval attempts, and cross-team resource access.
-* **Choice:** Option 3. Implemented automated async test scenarios validating that exactly one parallel claim succeeds and the other receives 409, outdated versions leave database state intact, idempotency keys return identical cached responses, and unauthorized cross-team requests are strictly forbidden.
-* **Trade-off:** Requires writing realistic concurrent tests with `asyncio.gather` and active database state, but prevents the catastrophic production race conditions that matter most.
+## 🌐 Live Production Verification Endpoints
 
----
-
-### Decision 10: Timeline-First User Experience with Automatic 409/403 Reconciliation
-* **Context (Step 6 / Phase 6):** Under high operational pressure, operators need immediate visibility into an item's chronological history and what requires attention next, while handling optimistic concurrency conflicts gracefully when multiple teammates work on the same incident.
-* **Options:**
-  1. Standard tabular CRUD dashboard with silent overwrites and manual page reloads.
-  2. Complex WebSocket synchronizer with real-time cursor tracking (violates blueprint constraint).
-  3. Actionable Queue tabs ("Assigned to Me", "Unassigned Urgent", "Awaiting Approval"), vertical audit timeline with event diff badges, and automatic 409 Conflict rollback banners with 1-click state reload.
-* **Choice:** Option 3. A timeline-centered UI that highlights what action is required next, validates valid state transitions on the client while letting the server strictly enforce RBAC gates, and instantly displays an actionable banner with latest server version upon a 409 Conflict.
-* **Trade-off:** Shifts workflow state visualization to the event feed rather than a giant form, but provides crystal-clear audit accountability and seamless conflict recovery.
+Verify the real-time health, documentation, and live user experience at:
+* **Frontend Web Application (Vercel):** [https://neo-help.vercel.app/](https://neo-help.vercel.app/)
+* **FastAPI Backend (Render):** [https://neohelp-backend.onrender.com](https://neohelp-backend.onrender.com)
+* **System Health Check Probe:** [https://neohelp-backend.onrender.com/api/health](https://neohelp-backend.onrender.com/api/health)
+* **Interactive Swagger UI:** [https://neohelp-backend.onrender.com/docs](https://neohelp-backend.onrender.com/docs)
