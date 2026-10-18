@@ -52,6 +52,10 @@ class AuthenticatedUser:
         """Requires Lead or Admin role in the team."""
         return self.has_team_access(team_id, min_role="Lead")
 
+    def is_admin(self) -> bool:
+        """Return whether the user has an Admin membership in any team."""
+        return any(role == "Admin" for role in self.team_roles.values())
+
 
 async def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme),

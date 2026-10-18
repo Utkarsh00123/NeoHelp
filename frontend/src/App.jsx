@@ -96,7 +96,10 @@ export default function App() {
       limit: 30
     }),
     enabled: !!currentUser,
-    refetchInterval: 15000,
+    // Keep cross-device updates responsive without adding a paid realtime service.
+    // Render/Neon/Redis remain on their free tiers; this is lightweight polling.
+    refetchInterval: 3000,
+    refetchIntervalInBackground: true,
   })
 
   // Selected item detail query
@@ -104,6 +107,8 @@ export default function App() {
     queryKey: ['item', selectedItemId],
     queryFn: () => fetchItem(selectedItemId),
     enabled: !!selectedItemId,
+    refetchInterval: 3000,
+    refetchIntervalInBackground: true,
   })
 
   // Master vertical activity timeline query
@@ -111,7 +116,8 @@ export default function App() {
     queryKey: ['item-activity', selectedItemId],
     queryFn: () => fetchItemActivity(selectedItemId),
     enabled: !!selectedItemId,
-    refetchInterval: 10000,
+    refetchInterval: 3000,
+    refetchIntervalInBackground: true,
   })
 
   // Auto-select first item when items load if none selected
@@ -312,7 +318,8 @@ export default function App() {
     try {
       await clearAllItems();
       setSelectedItemId(null);
-      queryClient.invalidateQueries({ queryKey: ['items'] });
+      await queryClient.invalidateQueries({ queryKey: ['items'] });
+      queryClient.removeQueries({ queryKey: ['item'] });
       setActionNotice("All tasks cleared! The board is now a completely blank slate for testing.");
     } catch (err) {
       setActionNotice(`Failed to clear items: ${err.message}`);

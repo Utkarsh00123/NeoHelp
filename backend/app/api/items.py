@@ -8,7 +8,7 @@ import json
 from datetime import datetime, timezone
 
 from app.database import get_db
-from app.models import WorkItem, ActivityEvent, OutboxJob, Team, User
+from app.models import WorkItem, ActivityEvent, OutboxJob, IdempotencyKey, Team, User
 from app.core.dependencies import get_current_user, AuthenticatedUser
 from app.core.idempotency import check_idempotency, store_idempotency
 from app.schemas.work_item import (
@@ -614,6 +614,9 @@ async def clear_all_items(
     db: AsyncSession = Depends(get_db)
 ):
     """Administrative reset endpoint to clear all work items, events, and jobs for clean testing."""
+    if not current_user.is_admin():
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden: Admin role required.")
+
     from sqlalchemy import delete
     await db.execute(delete(ActivityEvent))
     await db.execute(delete(OutboxJob))
@@ -629,6 +632,9 @@ async def reseed_database_endpoint(
     db: AsyncSession = Depends(get_db)
 ):
     """Seed sample items on demand."""
+    if not current_user.is_admin():
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden: Admin role required.")
+
     from app.seed import seed_database
     await seed_database(count)
     return {"status": "ok", "message": f"Successfully seeded {count} sample items."}
