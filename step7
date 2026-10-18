@@ -1,0 +1,21 @@
+## Frontend Architecture & UI Timeline Theme
+
+**Design System & Anti-Slop Directive**
+
+* **Minimalist Aesthetic:** Strictly eliminate all generic "AI slop" (unnecessary decorative UI, complex gradients, shadows, or filler text).
+* **Strict Color Palette:** Use only three core colors: pure white backgrounds, black text for high readability, and light blue strictly for interactive contrast (buttons, links) and critical highlights.
+
+**State Management & Performance**
+
+* **Tech Stack:** Use React coupled with TanStack Query (or Next.js) for built-in caching, background data refetching, and simplified state management.
+
+**Timeline-Driven User Experience**
+
+* **Activity Feed Feel:** Visually prioritize the chronology of events rather than presenting standard static CRUD forms.
+* **Filtered Dashboards:** Build actionable, predefined views ("Assigned to me", "Unassigned urgent", "Awaiting my approval"). These lists must rely entirely on server-side search, filtering, and cursor pagination (zero client-side array manipulation).
+* **Item Detail (Master Timeline):** Display the item's current status and core details at the top. The rest of the view must be a rich, vertical timeline seamlessly blending all `activity_events` (state transitions, priority changes, ownership transfers, and user comments) into one continuous chronological log.
+
+**Optimistic UI & Error Reconciliation**
+
+* **Instant Feedback:** Immediately update the UI locally when a user takes an action (e.g., claiming a task or changing a state).
+* **Automatic Rollback:** If the backend rejects the request (e.g., `409 Conflict` due to stale versioning or `403 Forbidden` due to RBAC rules), the frontend must automatically revert the optimistic update and display a clear, user-friendly prompt to reload the changed item.
