@@ -11,11 +11,14 @@ from app.api.items import router as items_router
 async def lifespan(app: FastAPI):
     # Startup actions
     print(f"Starting {settings.PROJECT_NAME} in {settings.ENVIRONMENT} mode...")
-    try:
-        from app.seed import seed_database
-        await seed_database(2500)
-    except Exception as e:
-        print(f"Warning: Database seeding encountered an error: {e}")
+    if not settings.SKIP_SEED:
+        try:
+            from app.seed import seed_database
+            await seed_database(2500)
+        except Exception as e:
+            print(f"Warning: Database seeding encountered an error: {e}")
+    else:
+        print("SKIP_SEED is enabled: starting with existing database state without auto-seeding.")
 
     # Optional: Run outbox worker inside API process for single-service free tier hosting
     worker_task = None

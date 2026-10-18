@@ -13,7 +13,9 @@ import {
   updateItem,
   transitionItem,
   fetchItemActivity,
-  addComment
+  addComment,
+  clearAllItems,
+  reseedItems
 } from './api/client'
 import './App.css'
 
@@ -305,6 +307,28 @@ export default function App() {
   const isTeamLeadOrAdmin = currentMembership?.role === 'Lead' || currentMembership?.role === 'Admin'
   const isViewer = currentMembership?.role === 'Viewer'
 
+  const handleClearAll = async () => {
+    if (!window.confirm("Are you sure you want to clear all work items to start with a blank board?")) return;
+    try {
+      await clearAllItems();
+      setSelectedItemId(null);
+      queryClient.invalidateQueries({ queryKey: ['items'] });
+      setActionNotice("All tasks cleared! The board is now a completely blank slate for testing.");
+    } catch (err) {
+      setActionNotice(`Failed to clear items: ${err.message}`);
+    }
+  };
+
+  const handleReseed = async () => {
+    try {
+      await reseedItems(20);
+      queryClient.invalidateQueries({ queryKey: ['items'] });
+      setActionNotice("Seeded 20 sample items into the board.");
+    } catch (err) {
+      setActionNotice(`Failed to reseed: ${err.message}`);
+    }
+  };
+
   return (
     <div className="layout-root">
       {/* Top Application Bar */}
@@ -396,12 +420,22 @@ export default function App() {
           </button>
         </div>
 
-        <button 
-          className="btn-create-task"
-          onClick={() => setIsCreateModalOpen(true)}
-        >
-          + New Task
-        </button>
+        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+          <button 
+            className="btn-action-secondary"
+            onClick={handleClearAll}
+            title="Wipe all tasks to start with a blank board"
+            style={{ fontSize: '0.825rem', padding: '0.45rem 0.85rem' }}
+          >
+            Clear All Tasks (Blank Slate)
+          </button>
+          <button 
+            className="btn-create-task"
+            onClick={() => setIsCreateModalOpen(true)}
+          >
+            + New Task
+          </button>
+        </div>
       </nav>
 
       {/* Master 2-Column Split View: Filtered Dashboard (Left) + Master Timeline (Right) */}

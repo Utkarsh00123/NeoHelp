@@ -607,3 +607,28 @@ async def add_item_comment(
     await db.commit()
     await db.refresh(event, ["actor"])
     return serialize_activity(event)
+
+@router.post("/admin/clear-all")
+async def clear_all_items(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Administrative reset endpoint to clear all work items, events, and jobs for clean testing."""
+    from sqlalchemy import delete
+    await db.execute(delete(ActivityEvent))
+    await db.execute(delete(OutboxJob))
+    await db.execute(delete(IdempotencyKey))
+    await db.execute(delete(WorkItem))
+    await db.commit()
+    return {"status": "ok", "message": "All work items, activity events, and outbox jobs have been wiped. Board is a blank slate."}
+
+@router.post("/admin/reseed")
+async def reseed_database_endpoint(
+    count: int = 50,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Seed sample items on demand."""
+    from app.seed import seed_database
+    await seed_database(count)
+    return {"status": "ok", "message": f"Successfully seeded {count} sample items."}

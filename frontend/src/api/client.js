@@ -196,3 +196,27 @@ export async function addComment(id, comment) {
   }
   return res.json();
 }
+
+export async function clearAllItems() {
+  const res = await fetch(`${API_BASE}/items/admin/clear-all`, {
+    method: 'POST',
+    headers: { ...getAuthHeader() },
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || 'Failed to clear items');
+  }
+  return res.json();
+}
+
+export async function reseedItems(count = 50) {
+  const res = await fetch(`${API_BASE}/items/admin/reseed?count=${count}`, {
+    method: 'POST',
+    headers: { ...getAuthHeader() },
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || 'Failed to reseed items');
+  }
+  return res.json();
+}
