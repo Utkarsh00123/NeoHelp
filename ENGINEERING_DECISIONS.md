@@ -67,3 +67,14 @@ This document tracks foundational architectural decisions across development pha
   3. Centralized `AuthenticatedUser` model and `require_team_role` dependency with role hierarchy mapping (`Admin > Lead > Member > Viewer`).
 * **Choice:** Option 3. Central dependency checks JWT token, loads user memberships, and evaluates permission thresholds on every operation. Non-members receive immediate `403 Forbidden` on read/write; Viewers are blocked from mutating actions; Leads are required for state approval and resolution.
 * **Trade-off:** Fast validation requires loading membership relations on authenticated requests, but completely eliminates cross-tenant data leakage and privilege escalation vulnerabilities.
+
+---
+
+### Decision 7: Concurrency Control via Optimistic Locking, Conditional Claims & Idempotency
+* **Context (Step 4 / Phase 4):** Operators simultaneously claim items and edit records under high velocity. Network hiccups and operator double-clicks can cause duplicate records, lost updates, or simultaneous claims.
+* **Options:**
+  1. Last-Write-Wins (LWW) with standard unconditional UPDATE statements.
+  2. Heavyweight pessimistic table/row locks (`SELECT ... FOR UPDATE`) held during long HTTP cycles.
+  3. Conditional atomic updates (`WHERE assignee_id IS NULL` for claims), optimistic version checks (`WHERE version = :client_version` for edits), and SHA256 payload hashed `Idempotency-Key` headers.
+* **Choice:** Option 3. Atomic conditional claims ensure exactly one operator succeeds while concurrent contenders receive `409 Conflict`. Optimistic version checks prevent stale overwrites and return current server state for reconciliation. Idempotency keys prevent duplicate mutations on retries.
+* **Trade-off:** Clients must manage retry and reconciliation prompts upon encountering 409 responses, but database lock contention is virtually zero and data integrity is mathematically preserved.

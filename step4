@@ -1,0 +1,25 @@
+Section 4: Concurrency Control & State Consistency
+Handling Simultaneous Claims: The system must gracefully manage situations
+where multiple users attempt to take responsibility for the same work item at the
+exact same time. The agent must implement a conditional database update (e.g.,
+UPDATE work_items SET assignee = ? WHERE id = ? AND assignee IS
+NULL
+). If this query updates zero rows, the server must reject the action with a
+409 Conflict to ensure exactly one user succeeds.
+PDF + 2
+Stale Data & Optimistic Locking: Users will inevitably view information that
+another user has just changed. To prevent overriding concurrent edits, the agent
+must implement optimistic locking using the version column. The client must
+send the version it currently sees, and the backend must execute an update
+strictly WHERE version = ? , incrementing the version upon success. A version
+mismatch must immediately trigger a 409 Conflict .
+PDF + 3
+Idempotency for Retries: The system must handle users repeating an action
+due to network uncertainty or double-clicking. The agent must require an
+Idempotency-Key header for creation and state-mutating requests. The server
+must store this key alongside its response and return the exact stored result if
+the identical key is transmitted again, preventing duplicate item creation.
+PDF + 2
+Frontend Reconciliation: When the server rejects an action due to a conflict
+(e.g., 409 or 403 ), the frontend application must cleanly roll back any
+optimistic state updates and explicitly prompt the user to reload the stale data.
