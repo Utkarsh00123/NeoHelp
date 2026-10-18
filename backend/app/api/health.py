@@ -20,7 +20,11 @@ async def health_check(db: AsyncSession = Depends(get_db)):
     
     # Check Redis
     try:
-        r = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+        redis_url = settings.normalized_redis_url
+        redis_kwargs = {"decode_responses": True}
+        if redis_url.startswith("rediss://"):
+            redis_kwargs["ssl_cert_reqs"] = None
+        r = aioredis.from_url(redis_url, **redis_kwargs)
         await r.ping()
         await r.aclose()
     except Exception as e:

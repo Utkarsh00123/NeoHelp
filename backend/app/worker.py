@@ -80,8 +80,12 @@ async def process_single_job(session, job: OutboxJob, redis_client: aioredis.Red
 
 async def run_worker():
     global running
-    print(f"Starting NeoHelp Outbox Worker (Redis: {settings.REDIS_URL})...")
-    redis_client = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+    redis_url = settings.normalized_redis_url
+    print(f"Starting NeoHelp Outbox Worker (Redis: {redis_url})...")
+    redis_kwargs = {"decode_responses": True}
+    if redis_url.startswith("rediss://"):
+        redis_kwargs["ssl_cert_reqs"] = None
+    redis_client = aioredis.from_url(redis_url, **redis_kwargs)
 
     try:
         while running:

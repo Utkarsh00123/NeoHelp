@@ -34,4 +34,13 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", extra="allow")
 
+    @property
+    def normalized_redis_url(self) -> str:
+        url = str(self.REDIS_URL).strip().strip("'").strip('"')
+        if url.startswith("redis-cli -u "):
+            url = url.replace("redis-cli -u ", "").strip()
+        if "upstash.io" in url and url.startswith("redis://"):
+            url = url.replace("redis://", "rediss://", 1)
+        return url
+
 settings = Settings()
