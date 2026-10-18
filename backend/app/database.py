@@ -3,15 +3,29 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, Asyn
 from sqlalchemy.orm import declarative_base
 from app.config import settings
 
-# Normalize DATABASE_URL for asyncpg if standard postgresql:// or postgres:// is provided
-db_url = str(settings.DATABASE_URL).strip().strip("'").strip('"')
-if db_url.startswith("postgres://"):
-    db_url = db_url.replace("postgres://", "postgresql+asyncpg://", 1)
-elif db_url.startswith("postgresql://") and not db_url.startswith("postgresql+asyncpg://"):
-    db_url = db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+import urllib.parse
 
-if "sslmode=" in db_url:
-    db_url = db_url.replace("sslmode=", "ssl=")
+# Robustly normalize DATABASE_URL for asyncpg (strips unsupported query parameters like channel_binding and translates sslmode to ssl)
+raw_db_url = str(settings.DATABASE_URL).strip().strip("'").strip('"')
+parsed = urllib.parse.urlsplit(raw_db_url)
+query_params = urllib.parse.parse_qs(parsed.query)
+
+# Filter query params for asyncpg compatibility
+valid_asyncpg_query_params = {'ssl', 'server_settings', 'timeout', 'command_timeout'}
+cleaned_query = {}
+for k, v in query_params.items():
+    if k in ('sslmode', 'ssl'):
+        cleaned_query['ssl'] = 'require'
+    elif k in valid_asyncpg_query_params:
+        cleaned_query[k] = v[0]
+
+new_query_str = urllib.parse.urlencode(cleaned_query)
+# Ensure scheme is postgresql+asyncpg
+scheme = parsed.scheme
+if scheme in ("postgres", "postgresql"):
+    scheme = "postgresql+asyncpg"
+
+db_url = urllib.parse.urlunsplit((scheme, parsed.netloc, parsed.path, new_query_str, parsed.fragment))
 
 # Engine configuration
 engine = create_async_engine(
