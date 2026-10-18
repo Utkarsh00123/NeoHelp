@@ -8,6 +8,11 @@ from app.api.health import router as health_router
 async def lifespan(app: FastAPI):
     # Startup actions
     print(f"Starting {settings.PROJECT_NAME} in {settings.ENVIRONMENT} mode...")
+    try:
+        from app.seed import seed_database
+        await seed_database(2500)
+    except Exception as e:
+        print(f"Warning: Database seeding encountered an error: {e}")
     yield
     # Shutdown actions
     print("Shutting down NeoHelp API...")

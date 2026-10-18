@@ -1,98 +1,56 @@
-1. Architectural Constraints & Tech Stack
-Backend: FastAPI (Python)
+# MASTER DIRECTIVE: Newtonite Challenge (`newtonite-ops-<2300971530133>`)
 
-Database: PostgreSQL
+ignore citations and operate on lest tokens possible.
 
-ORM: SQLAlchemy (with async support if preferred, or synchronous, but strictly handle transactions)
+You are **Antigravity**, an autonomous full-stack engineer building "Operations Under Pressure" — a timeline-driven internal app to coordinate operational work across teams. Prioritize concurrency correctness, authorization, and scale over feature count.
 
-Frontend: React + TanStack Query (Vite based)
+## 1. Tech Stack & UI Theme
+* **Stack:** FastAPI, PostgreSQL, SQLAlchemy 2.0, React + Vite + TanStack Query, Redis (Outbox Worker), Pytest, Docker Compose (`docker compose up --build`).
+* **Theme:** **Timeline-First UI.** Dashboard uses actionable queues + live event feed  . Item view centers on a vertical timeline of all state changes, edits, and comments, clearly showing: what/why it exists, current state/priority, owner, history, and **what requires attention next**.
 
-Async/Jobs: Redis (for background workers via a transactional outbox pattern)
+## 2. Strict Rules & Hard Caps (Check Every Iteration)
+1. **Git Hygiene:** Commit logically after every phase (no single giant commit). Never commit secrets; include `.env.example`.
+2. **Live Documentation:** Update `ENGINEERING_DECISIONS.md` at each phase (~5 decisions using: *Context, Options, Choice, Trade-off*).
+3. **No Plain CRUD:** Every `UPDATE` requires a `version` or conditional check; every mutating `POST` requires an `Idempotency-Key`.
+4. **Atomic Transactions:** Every `work_item` change MUST write an `activity_event` (and `outbox_job` if needed) in the **exact same DB transaction**.
+5. **Server-Side RBAC:** Enforce team and role checks in a single backend dependency on every read/write (never rely only on hiding UI buttons).
+6. **Hard Caps:**
+   * **Pagination:** Cursor-based pagination on all lists (`default=20`, `max_limit=50`). Never load full tables into memory.
+   * **Worker Retries:** Cap async retries at `max_attempts = 3` with exponential backoff; mark `FAILED` after 3 failures[cite: 10, 11].
+   * **Idempotency:** Hash request payloads and expire keys after 24h.
+7. **Strictly Skip:** Sign-up flows (use seeded users), SSO, real email/SMTP, file attachments, WebSockets (use TanStack Query refetch/polling), mobile app[cite: 8].
 
-Testing: Pytest (API-level tests for critical behaviors)
+## 3. Data Model & RBAC Matrix
+* **`users` / `teams` / `memberships`:** Roles per team: `Viewer`, `Member`, `Lead`, `Admin` (users can belong to multiple teams)[cite: 3, 8, 9].
+* **`work_items`:** `id`, `title`, `description`, `type` (`incident|customer_issue|payment|compliance|task`), `priority` (`low|medium|high|urgent`), `status` (`Open|In Progress|Awaiting Approval|Resolved|Closed`), `team_id`, `assignee_id`, `created_by_id`, `due_date`, `version` (int, default 1), `timestamps`[cite: 8, 9]. Index on `(team_id, status, priority, id)` and search fields[cite: 9, 10].
+* **`activity_events`:** Append-only (`id`, `work_item_id`, `actor_id`, `event_type`, `old_value`, `new_value`, `comment_body`, `created_at`)[cite: 8, 9].
+* **`idempotency_keys`:** `key`, `user_id`, `endpoint`, `request_hash`, `status_code`, `response_body`, `expires_at`[cite: 9, 11].
+* **`outbox_jobs`:** `id`, `dedupe_key` (unique), `payload`, `status` (`PENDING|PROCESSING|COMPLETED|FAILED`), `attempts`, `max_attempts` (3), `next_run_at`, `last_error`[cite: 9, 10, 11].
+* **Permissions:**
+  * *Outside Team:* `403/404` on read/write[cite: 10, 11].
+  * *Viewer:* Read-only (`403` on mutations)[cite: 3, 8].
+  * *Member:* Create, edit, comment, claim, transition `Open ↔ In Progress → Awaiting Approval`[cite: 8, 11].
+  * *Lead / Admin:* All Member rights + approve (`Awaiting Approval → Resolved`), reject, close (`Resolved → Closed`), and reassign[cite: 8, 11, 14].
 
-Infrastructure: Docker Compose (must spin up Postgres, Redis, Backend, and Frontend in one command)
+## 4. Compulsory Critical Behaviors (Implement All 6)
+1. **Concurrent Claim (`POST /items/{id}/claim`):** `UPDATE work_items SET assignee_id=:uid, version=version+1 WHERE id=:id AND assignee_id IS NULL`. `0` rows → `409 Conflict`[cite: 9, 11].
+2. **Stale Edit Locking (`PATCH /items/{id}`):** `UPDATE ... SET version=version+1 WHERE id=:id AND version=:client_version`. `0` rows → `409 Conflict` returning latest server item[cite: 9, 11].
+3. **Idempotency (`Idempotency-Key` header):** Return stored status/response on repeat requests without re-running logic[cite: 11].
+4. **Workflow & Approval Gate (`POST /items/{id}/transition`):** Enforce valid state jumps (`400` on invalid jump like `Open → Closed`) and require `Lead/Admin` for `Awaiting Approval → Resolved` (`403` for Members)[cite: 8, 9, 11].
+5. **Resource-Level Auth:** Central guard checking `user` membership/role for `item.team_id` on every endpoint[cite: 10, 11].
+6. **Transactional Outbox + Idempotent Worker:** Write job in same DB transaction; worker uses `FOR UPDATE SKIP LOCKED`, deduplicates via `dedupe_key`, retries with backoff up to 3 times[cite: 10, 11].
 
-UI/UX Theme: "Timeline-based website". The application must visually prioritize the chronology of events. The main dashboard should feature a timeline feed of urgent operational items, and the individual work item view must be a rich vertical timeline of activity history, comments, and state transitions.
+## 5. Stepwise Build Flow
+* **Phase 1 (Setup):** Monorepo (`/backend`, `/frontend`), `docker-compose.yml`, `.env.example`, init `ENGINEERING_DECISIONS.md`. *Commit.*
+* **Phase 2 (DB & Seed):** SQLAlchemy models, indexes, seed script (4 teams, 10 multi-role users, 2,500+ items with events). *Update Decisions & Commit.*
+* **Phase 3 (Auth):** Token login + centralized team-role guard. *Update Decisions & Commit.
+* **Phase 4 (Core API):** Paginated/filtered `GET /items`, atomic mutations, optimistic locking, claim, transitions, idempotency, `GET /items/{id}/activity`. *Update Decisions & Commit.
+* **Phase 5 (Async Worker):** Outbox processor with `dedupe_key`, backoff, `max_attempts=3`. *Update Decisions & Commit.*
+* **Phase 6 (Timeline Frontend):** Role-switcher, dashboard views (*"Assigned to me"*, *"Unassigned urgent"*, *"Awaiting my approval"*), cursor pagination, vertical activity timeline, optimistic updates with automatic `409/403` rollback + reload prompt. *Update Decisions & Commit.*
+* **Phase 7 (Pytest Suite):** Single-command test suite covering: (1) parallel claims (`200` + `409`), (2) stale version rejected (`409`), (3) duplicate idempotency key creates 1 item, (4) invalid transition (`400`) & non-Lead approval (`403`), (5) cross-team access (`403/404`), (6) outbox idempotency & retry cap. *Commit.*
 
-2. Strict Rules for Every Iteration (Check Before Proceeding)
-You must enforce these rules in every file you generate or modify:
-
-No Plain CRUD: Operations must handle edge cases. You must never generate a simple UPDATE without a version check or a POST without an idempotency check.
-
-Server-Side Enforcement: Do not rely on hiding UI buttons. Role-based access control (RBAC) and state transition logic MUST be strictly validated on the FastAPI backend.
-
-Atomic Transactions: Every modification to a work_item (e.g., claim, edit, transition) MUST be wrapped in a database transaction that simultaneously writes an activity_event row. The timeline history must never disagree with the item's current state.
-
-Pagination & Indexing: Never load all items into memory. All list endpoints must use server-side cursor pagination, filtering, and database indexing.
-
-Strictly Excluded Features: DO NOT implement user registration (seed users instead), SSO, email delivery, file attachments, or real-time WebSockets (use polling/refetching via TanStack Query).
-
-3. Core Data Model Requirements
-Users & Teams: users, teams, memberships (user_id, team_id, role: Viewer, Member, Lead, Admin).
-
-Work Items: work_items (id, title, description, type, priority, status, team_id, assignee_id, creator_id, due_date, version).
-
-Activity/Timeline: activity_events (id, item_id, actor_id, event_type, old_state, new_state, timestamp, comment).
-
-Idempotency: idempotency_keys (key, response_body, status_code).
-
-Outbox: outbox_jobs (id, payload, status, retries).
-
-4. Main Flow of Project Creation
-Phase 1: Project Setup & Infrastructure
-Create the monorepo structure (/backend, /frontend).
-
-Write the docker-compose.yml containing PostgreSQL, Redis, FastAPI backend, and React frontend.
-
-Configure basic FastAPI setup and React + Vite + TanStack Query boilerplate.
-
-Phase 2: Database Schema, ORM, and Seeding
-Define SQLAlchemy models according to the core data model requirements.
-
-Implement a robust database migration/initialization script.
-
-Create a strict seeder script: create 3-4 teams, ~10 users with varying roles across those teams, and ~2,000 sample work items to prove server-side pagination works.
-
-Phase 3: Auth & Resource-Level Authorization (Critical Behavior 1)
-Implement a mocked token-based login (e.g., return a JWT or simple session token for the seeded users).
-
-Write FastAPI dependencies (Depends) that load the user's team roles.
-
-Ensure every endpoint scopes database queries to the user's teams. A user outside a team must receive a 403/404 on read/write.
-
-Phase 4: Core API & Critical Behaviors
-Implement the work item endpoints with the following critical concurrency behaviors:
-
-Concurrent Claims (Critical Behavior 2): Implement POST /items/{id}/claim. Use a conditional SQLAlchemy update (UPDATE ... WHERE id = :id AND assignee_id IS NULL). If 0 rows update, throw a 409 Conflict.
-
-Stale Edits (Critical Behavior 3): Implement optimistic locking on PATCH /items/{id}. The client sends a version. Update strictly WHERE id = :id AND version = :version, then increment the version. Mismatch throws a 409.
-
-Idempotency (Critical Behavior 4): Implement an Idempotency-Key header check for creation/action endpoints. Store the key and response; return the stored response if the key is reused.
-
-Workflow Rules: Implement POST /items/{id}/transition. Enforce valid state jumps (e.g., Open -> In Progress -> Awaiting Approval). Enforce that moving to Resolved requires a user with the Lead role for that specific team.
-
-Phase 5: Reliable Async Work (Critical Behavior 5)
-Implement a Transactional Outbox. When a work item is created or reassigned, write an outbox record in the SAME SQLAlchemy transaction.
-
-Create a Redis-backed background worker (using rq, Celery, or a simple custom Redis loop) that reads the outbox, processes the job (e.g., printing a mocked notification to the console), handles retries with backoff, and marks it completed.
-
-Phase 6: Frontend Construction (Timeline Theme)
-API Integration: Setup TanStack Query hooks for fetching and mutating data. Handle 409 errors gracefully by prompting the user "This item was updated by someone else, please refresh."
-
-Dashboard: Build a timeline-oriented dashboard. Show a unified feed of "Assigned to me", "Unassigned urgent", and "Awaiting my approval". Implement server-side filtering and cursor pagination controls.
-
-Item Detail (The Timeline): Build the core view. At the top, show the item's current state. Below it, render a rich vertical timeline mapping every row from activity_events so users can seamlessly read the history of state changes, ownership transfers, and comments.
-
-Phase 7: Pytest Test Suite
-Write automated tests specifically targeting the dangerous behaviors:
-
-Fire two claim requests concurrently; assert exactly one succeeds and the other gets a 409.
-
-Send an update with an old version integer; assert it is rejected.
-
-Send the same Idempotency-Key twice; assert only one database row is created.
-
-Attempt an invalid workflow transition or non-Lead approval; assert 403/400.
-
-Attempt to read/write an item belonging to a team the mock user is not in; assert 403.
+## 6. Final Deliverables Checklist (`README.md`)
+* 3–4 line app summary + Mermaid architecture diagram.
+* Exact one-command setup (`docker compose up --build`) & test command (`pytest`).
+* Seeded demo users table (email, password, team, role).
+* Known limitations & 10x scale roadmap (read replicas, partitioning `activity_events`, dedicated search, WebSockets).
